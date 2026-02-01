@@ -10,19 +10,29 @@ from conversations import Conversation
 from config import AVAILABLE_MODELS
 
 
-def get_main_menu_keyboard() -> ReplyKeyboardMarkup:
-    """Главное меню с кнопками"""
+def get_main_menu_keyboard(is_dalle_mode: bool = False, is_edit_mode: bool = False, is_template_mode: bool = False) -> ReplyKeyboardMarkup:
+    """Главное меню с кнопками. Меняет текст кнопок в зависимости от режима."""
     builder = ReplyKeyboardBuilder()
     builder.row(
         KeyboardButton(text="📝 Новая беседа"),
         KeyboardButton(text="📂 Мои беседы")
     )
+    
+    # Динамические кнопки режимов
+    dalle_text = "❌ Выйти из DALL-E" if is_dalle_mode else "🖼 DALL-E"
+    editor_text = "❌ Выйти из редактора" if is_edit_mode else "🎨 Редактор"
+    template_text = "❌ Выйти из шаблона" if is_template_mode else "📄 Шаблоны"
+    
     builder.row(
         KeyboardButton(text="🤖 Модель"),
-        KeyboardButton(text="🖼 DALL-E")
+        KeyboardButton(text=dalle_text)
     )
     builder.row(
-        KeyboardButton(text="🎨 Редактор"),
+        KeyboardButton(text=editor_text),
+        KeyboardButton(text=template_text)
+    )
+    builder.row(
+        KeyboardButton(text="✨ Промпты"),
         KeyboardButton(text="🗑 Очистить")
     )
     builder.row(
@@ -118,6 +128,53 @@ def get_models_keyboard(current_model: str) -> InlineKeyboardMarkup:
         builder.row(InlineKeyboardButton(
             text=f"{prefix}{model_name}",
             callback_data=f"select_model:{model_id}"
+        ))
+    
+    return builder.as_markup()
+
+
+def get_custom_prompts_keyboard(prompts: list, active_prompt: str = None) -> InlineKeyboardMarkup:
+    """Клавиатура управления кастомными промптами"""
+    builder = InlineKeyboardBuilder()
+    
+    if prompts:
+        for i, prompt in enumerate(prompts):
+            # Обрезаем длинные промпты для отображения
+            short_prompt = prompt[:30] + "..." if len(prompt) > 30 else prompt
+            is_active = prompt == active_prompt
+            prefix = "✅ " if is_active else ""
+            
+            builder.row(InlineKeyboardButton(
+                text=f"{prefix}Промпт {i+1}: {short_prompt}",
+                callback_data=f"toggle_prompt:{i}"
+            ))
+        
+        # Кнопки удаления для каждого промпта
+        delete_buttons = []
+        for i in range(len(prompts)):
+            delete_buttons.append(InlineKeyboardButton(
+                text=f"🗑 Удалить {i+1}",
+                callback_data=f"delete_prompt:{i}"
+            ))
+        if delete_buttons:
+            builder.row(*delete_buttons)
+    else:
+        builder.row(InlineKeyboardButton(
+            text="📝 Нет сохранённых промптов",
+            callback_data="no_action"
+        ))
+    
+    # Кнопка добавления нового промпта (максимум 2)
+    builder.row(InlineKeyboardButton(
+        text="➕ Добавить промпт" + (" (заменит старый)" if len(prompts) >= 2 else ""),
+        callback_data="add_custom_prompt"
+    ))
+    
+    # Кнопка отключения кастомного промпта
+    if active_prompt:
+        builder.row(InlineKeyboardButton(
+            text="🔄 Использовать стандартный промпт",
+            callback_data="disable_custom_prompt"
         ))
     
     return builder.as_markup()

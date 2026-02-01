@@ -86,6 +86,10 @@ class ConversationManager:
                     
                 self._active_conversations[user_id] = data.get("active_conversation_id")
                 self._user_models[user_id] = data.get("selected_model", DEFAULT_MODEL)
+                # Загружаем кастомные промпты
+                if not hasattr(self, '_custom_prompts'):
+                    self._custom_prompts = {}
+                self._custom_prompts[user_id] = data.get("custom_prompts", [])
             except Exception:
                 self._conversations[user_id] = {}
                 self._active_conversations[user_id] = None
@@ -172,6 +176,136 @@ class ConversationManager:
         if not hasattr(self, '_dalle_images'):
             self._dalle_images = {}
         self._dalle_images[user_id] = image_bytes
+
+    # ===== Методы для режима шаблонов документов =====
+    
+    def is_template_mode(self, user_id: int) -> bool:
+        """Проверяет, включён ли режим шаблонов"""
+        if not hasattr(self, '_template_mode'):
+            self._template_mode = {}
+        return self._template_mode.get(user_id, False)
+    
+    def set_template_mode(self, user_id: int, enabled: bool) -> None:
+        """Включает/выключает режим шаблонов"""
+        if not hasattr(self, '_template_mode'):
+            self._template_mode = {}
+        if not hasattr(self, '_template_docs'):
+            self._template_docs = {}
+        if not hasattr(self, '_template_names'):
+            self._template_names = {}
+        
+        self._template_mode[user_id] = enabled
+        if not enabled:
+            self._template_docs.pop(user_id, None)
+            self._template_names.pop(user_id, None)
+    
+    def get_template_doc(self, user_id: int) -> Optional[bytes]:
+        """Получает сохранённый шаблон документа"""
+        if not hasattr(self, '_template_docs'):
+            self._template_docs = {}
+        return self._template_docs.get(user_id)
+    
+    def get_template_name(self, user_id: int) -> Optional[str]:
+        """Получает имя сохранённого шаблона"""
+        if not hasattr(self, '_template_names'):
+            self._template_names = {}
+        return self._template_names.get(user_id)
+    
+    def set_template_doc(self, user_id: int, doc_bytes: bytes, filename: str) -> None:
+        """Сохраняет шаблон документа"""
+        if not hasattr(self, '_template_docs'):
+            self._template_docs = {}
+        if not hasattr(self, '_template_names'):
+            self._template_names = {}
+        self._template_docs[user_id] = doc_bytes
+        self._template_names[user_id] = filename
+
+    # ===== Методы для кастомных промптов =====
+    
+    def get_custom_prompts(self, user_id: int) -> List[str]:
+        """Получает список кастомных промптов пользователя (максимум 2)"""
+        self._load_user_data(user_id)
+        if not hasattr(self, '_custom_prompts'):
+            self._custom_prompts = {}
+        return self._custom_prompts.get(user_id, [])
+    
+    def add_custom_prompt(self, user_id: int, prompt: str) -> int:
+        """
+        Добавляет кастомный промпт пользователю.
+        Если уже 2 промпта, старейший заменяется на новый.
+        Возвращает индекс добавленного/заменённого промпта (1 или 2).
+        """
+        self._load_user_data(user_id)
+        if not hasattr(self, '_custom_prompts'):
+            self._custom_prompts = {}
+        
+        if user_id not in self._custom_prompts:
+            self._custom_prompts[user_id] = []
+        
+        prompts = self._custom_prompts[user_id]
+        
+        if len(prompts) < 2:
+            # Есть место - просто добавляем
+            prompts.append(prompt)
+            self._save_custom_prompts(user_id)
+            return len(prompts)
+        else:
+            # Все слоты заняты - заменяем самый старый (первый)
+            prompts.pop(0)
+            prompts.append(prompt)
+            self._save_custom_prompts(user_id)
+            return 2  # Новый всегда становится вторым
+    
+    def get_active_custom_prompt(self, user_id: int) -> Optional[str]:
+        """Получает активный кастомный промпт (если выбран)"""
+        if not hasattr(self, '_active_custom_prompt'):
+            self._active_custom_prompt = {}
+        return self._active_custom_prompt.get(user_id)
+    
+    def set_active_custom_prompt(self, user_id: int, index: Optional[int]) -> None:
+        """Устанавливает активный кастомный промпт по индексу (0, 1) или None для отключения"""
+        if not hasattr(self, '_active_custom_prompt'):
+            self._active_custom_prompt = {}
+        
+        if index is None:
+            self._active_custom_prompt.pop(user_id, None)
+        else:
+            prompts = self.get_custom_prompts(user_id)
+            if 0 <= index < len(prompts):
+                self._active_custom_prompt[user_id] = prompts[index]
+    
+    def delete_custom_prompt(self, user_id: int, index: int) -> bool:
+        """Удаляет кастомный промпт по индексу (0 или 1)"""
+        if not hasattr(self, '_custom_prompts'):
+            self._custom_prompts = {}
+        
+        prompts = self._custom_prompts.get(user_id, [])
+        if 0 <= index < len(prompts):
+            prompts.pop(index)
+            # Если удалили активный промпт, сбрасываем
+            if hasattr(self, '_active_custom_prompt') and user_id in self._active_custom_prompt:
+                if self._active_custom_prompt[user_id] not in prompts:
+                    self._active_custom_prompt.pop(user_id, None)
+            self._save_custom_prompts(user_id)
+            return True
+        return False
+    
+    def _save_custom_prompts(self, user_id: int) -> None:
+        """Сохраняет кастомные промпты в файл пользователя"""
+        # Загружаем текущие данные и добавляем промпты
+        file_path = self._get_user_file(user_id)
+        data = {}
+        if os.path.exists(file_path):
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+            except Exception:
+                pass
+        
+        data["custom_prompts"] = self._custom_prompts.get(user_id, [])
+        
+        with open(file_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
 
     
     # ===== Методы для работы с беседами =====

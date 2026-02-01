@@ -116,3 +116,108 @@ async def extract_text_from_file(file_data: bytes, file_name: str) -> Optional[s
     else:
         return None
 
+
+async def edit_docx_with_replacements(file_data: bytes, replacements: dict) -> bytes:
+    """
+    Редактирует DOCX документ, заменяя текст с сохранением форматирования.
+    
+    Args:
+        file_data: Байты исходного DOCX файла
+        replacements: Словарь замен {старый_текст: новый_текст}
+        
+    Returns:
+        Байты отредактированного документа
+    """
+    doc = Document(io.BytesIO(file_data))
+    
+    def replace_in_paragraph(paragraph, old_text, new_text):
+        """Заменяет текст в параграфе, сохраняя форматирование первого run"""
+        if old_text not in paragraph.text:
+            return False
+        
+        # Собираем полный текст и находим позицию замены
+        full_text = paragraph.text
+        
+        if old_text in full_text:
+            # Простой случай - текст находится целиком в одном run
+            for run in paragraph.runs:
+                if old_text in run.text:
+                    run.text = run.text.replace(old_text, new_text)
+                    return True
+            
+            # Сложный случай - текст разбит по нескольким runs
+            # Объединяем все runs в один с сохранением форматирования первого
+            if paragraph.runs:
+                first_run = paragraph.runs[0]
+                new_full_text = full_text.replace(old_text, new_text)
+                
+                # Очищаем все runs кроме первого
+                for run in paragraph.runs[1:]:
+                    run.text = ""
+                
+                first_run.text = new_full_text
+                return True
+        
+        return False
+    
+    def replace_in_cell(cell, old_text, new_text):
+        """Заменяет текст в ячейке таблицы"""
+        replaced = False
+        for paragraph in cell.paragraphs:
+            if replace_in_paragraph(paragraph, old_text, new_text):
+                replaced = True
+        return replaced
+    
+    # Заменяем во всех параграфах документа
+    for old_text, new_text in replacements.items():
+        for paragraph in doc.paragraphs:
+            replace_in_paragraph(paragraph, old_text, new_text)
+        
+        # Заменяем в таблицах
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    replace_in_cell(cell, old_text, new_text)
+        
+        # Заменяем в headers и footers
+        for section in doc.sections:
+            # Header
+            if section.header:
+                for paragraph in section.header.paragraphs:
+                    replace_in_paragraph(paragraph, old_text, new_text)
+            # Footer
+            if section.footer:
+                for paragraph in section.footer.paragraphs:
+                    replace_in_paragraph(paragraph, old_text, new_text)
+    
+    # Сохраняем в байты
+    output = io.BytesIO()
+    doc.save(output)
+    output.seek(0)
+    return output.read()
+
+
+async def get_docx_structure_for_ai(file_data: bytes) -> str:
+    """
+    Извлекает структуру документа для анализа AI.
+    Возвращает текст с маркерами для понимания структуры.
+    """
+    doc = Document(io.BytesIO(file_data))
+    parts = []
+    
+    parts.append("=== СОДЕРЖИМОЕ ДОКУМЕНТА ===\n")
+    
+    # Параграфы
+    for i, paragraph in enumerate(doc.paragraphs):
+        if paragraph.text.strip():
+            style_name = paragraph.style.name if paragraph.style else "Normal"
+            parts.append(f"[П{i+1}|{style_name}] {paragraph.text}")
+    
+    # Таблицы
+    for t_idx, table in enumerate(doc.tables):
+        parts.append(f"\n--- ТАБЛИЦА {t_idx + 1} ---")
+        for r_idx, row in enumerate(table.rows):
+            cells = [cell.text.strip() for cell in row.cells]
+            parts.append(f"  Строка {r_idx + 1}: {' | '.join(cells)}")
+    
+    return "\n".join(parts)

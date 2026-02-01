@@ -18,8 +18,9 @@ from config import (
     MAX_TELEGRAM_MESSAGE_LENGTH,
     AVAILABLE_MODELS
 )
+from aiogram.types import ReactionTypeEmoji
 from openai_client import get_chat_response, encode_image_to_base64, generate_image, edit_image_with_dalle, transcribe_audio
-from document_parser import extract_text_from_file
+from document_parser import extract_text_from_file, edit_docx_with_replacements, get_docx_structure_for_ai
 from conversations import conversation_manager
 from keyboards import (
     get_main_menu_keyboard,
@@ -28,7 +29,8 @@ from keyboards import (
     get_confirm_delete_keyboard,
     get_confirm_clear_keyboard,
     get_cancel_keyboard,
-    get_models_keyboard
+    get_models_keyboard,
+    get_custom_prompts_keyboard
 )
 
 
@@ -88,7 +90,28 @@ class AnimatedLoader:
 # Состояния FSM
 class BotStates(StatesGroup):
     waiting_for_rename = State()
+    waiting_for_custom_prompt = State()
 
+
+async def add_heart_reaction(message: Message, bot: Bot) -> None:
+    """Добавляет реакцию ❤️ на сообщение пользователя"""
+    try:
+        await bot.set_message_reaction(
+            chat_id=message.chat.id,
+            message_id=message.message_id,
+            reaction=[ReactionTypeEmoji(emoji="❤")]
+        )
+    except Exception as e:
+        # Игнорируем ошибки реакций (могут быть отключены в чате)
+        logger.debug(f"Could not add reaction: {e}")
+
+
+def get_updated_keyboard(user_id: int) -> None:
+    """Возвращает клавиатуру с учётом текущих режимов пользователя"""
+    is_dalle = conversation_manager.is_dalle_mode(user_id)
+    is_edit = conversation_manager.is_edit_mode(user_id)
+    is_template = conversation_manager.is_template_mode(user_id)
+    return get_main_menu_keyboard(is_dalle_mode=is_dalle, is_edit_mode=is_edit, is_template_mode=is_template)
 
 
 @router.message(Command("start"))
@@ -112,13 +135,14 @@ async def cmd_start(message: Message) -> None:
 • 🖼 Анализировать изображения
 • 📄 Читать PDF и DOCX документы
 • 🤖 Переключаться между моделями
+• ✨ Кастомные промпты (до 2 шт.)
 
 **Текущая модель:** {model_name}
 
 Используй меню ниже для управления.
 Просто напиши сообщение, чтобы начать! 🚀"""
     
-    await message.answer(welcome_text, reply_markup=get_main_menu_keyboard(), parse_mode="Markdown")
+    await message.answer(welcome_text, reply_markup=get_updated_keyboard(user_id), parse_mode="Markdown")
 
 
 @router.message(Command("help"))
@@ -178,7 +202,7 @@ async def btn_select_model(message: Message) -> None:
     )
 
 
-@router.message(F.text == "🎨 Редактор")
+@router.message(F.text.in_(["🎨 Редактор", "❌ Выйти из редактора"]))
 async def btn_editor_mode(message: Message) -> None:
     """Включить/выключить режим редактирования изображений"""
     user_id = message.from_user.id
@@ -191,7 +215,8 @@ async def btn_editor_mode(message: Message) -> None:
         await message.answer(
             "🎨 **Режим редактирования выключен**\n\n"
             "Теперь бот работает в обычном режиме.",
-            parse_mode="Markdown"
+            parse_mode="Markdown",
+            reply_markup=get_updated_keyboard(user_id)
         )
     else:
         # Включаем режим
@@ -203,12 +228,13 @@ async def btn_editor_mode(message: Message) -> None:
             "2. Напиши что изменить (например: \"добавь шляпу\")\n"
             "3. Бот запомнит картинку и можно продолжать редактировать\n\n"
             "💡 Картинка сохраняется до выхода из режима.\n"
-            "Нажми 🎨 Редактор ещё раз чтобы выйти.",
-            parse_mode="Markdown"
+            "Нажми ❌ Выйти из редактора чтобы выйти.",
+            parse_mode="Markdown",
+            reply_markup=get_updated_keyboard(user_id)
         )
 
 
-@router.message(F.text == "🖼 DALL-E")
+@router.message(F.text.in_(["🖼 DALL-E", "❌ Выйти из DALL-E"]))
 async def btn_dalle_mode(message: Message) -> None:
     """Включить/выключить DALL-E режим генерации"""
     user_id = message.from_user.id
@@ -221,7 +247,8 @@ async def btn_dalle_mode(message: Message) -> None:
         await message.answer(
             "🖼 **DALL-E режим выключен**\n\n"
             "Теперь бот работает в обычном режиме.",
-            parse_mode="Markdown"
+            parse_mode="Markdown",
+            reply_markup=get_updated_keyboard(user_id)
         )
     else:
         # Включаем режим
@@ -234,10 +261,45 @@ async def btn_dalle_mode(message: Message) -> None:
             "• Можешь дописать: \"добавь солнце\" - и он отредактирует\n\n"
             "💡 Первое сообщение = новая картинка\n"
             "Следующие = редактирование\n\n"
-            "Нажми 🖼 DALL-E ещё раз чтобы выйти.",
-            parse_mode="Markdown"
+            "Нажми ❌ Выйти из DALL-E чтобы выйти.",
+            parse_mode="Markdown",
+            reply_markup=get_updated_keyboard(user_id)
         )
 
+
+@router.message(F.text.in_(["📄 Шаблоны", "❌ Выйти из шаблона"]))
+async def btn_template_mode(message: Message) -> None:
+    """Включить/выключить режим шаблонов документов"""
+    user_id = message.from_user.id
+    
+    is_template_mode = conversation_manager.is_template_mode(user_id)
+    
+    if is_template_mode:
+        # Выключаем режим
+        conversation_manager.set_template_mode(user_id, False)
+        await message.answer(
+            "📄 **Режим шаблонов выключен**\n\n"
+            "Загруженный шаблон удалён. Теперь бот работает в обычном режиме.",
+            parse_mode="Markdown",
+            reply_markup=get_updated_keyboard(user_id)
+        )
+    else:
+        # Включаем режим
+        conversation_manager.set_template_mode(user_id, True)
+        await message.answer(
+            "📄 **Режим шаблонов включён!**\n\n"
+            "📋 **Как использовать:**\n"
+            "1. Отправь DOCX документ (шаблон или договор)\n"
+            "2. Опиши какие изменения нужно сделать:\n"
+            "   • _\"Замени ООО Ромашка на ООО Василёк\"_\n"
+            "   • _\"Измени дату на 15.03.2026\"_\n"
+            "   • _\"Поменяй сумму 100000 на 250000\"_\n"
+            "3. Бот создаст новый документ с сохранением форматирования!\n\n"
+            "💡 Шрифты, стили и оформление сохранятся.\n"
+            "Нажми ❌ Выйти из шаблона чтобы выйти.",
+            parse_mode="Markdown",
+            reply_markup=get_updated_keyboard(user_id)
+        )
 
 
 @router.message(F.text == "🗑 Очистить")
@@ -297,6 +359,41 @@ async def show_help(message: Message) -> None:
 • Читаю PDF и DOCX файлы"""
     
     await message.answer(help_text, parse_mode="Markdown")
+
+
+@router.message(F.text == "✨ Промпты")
+async def btn_custom_prompts(message: Message) -> None:
+    """Показать меню управления кастомными промптами"""
+    user_id = message.from_user.id
+    
+    prompts = conversation_manager.get_custom_prompts(user_id)
+    active = conversation_manager.get_active_custom_prompt(user_id)
+    
+    text = """✨ **Кастомные промпты**
+
+Здесь ты можешь добавить до 2 своих системных промптов.
+Кастомный промпт будет добавлен к стандартному.
+
+"""
+    if prompts:
+        text += f"У тебя {len(prompts)} промпт(ов):\n\n"
+        for i, p in enumerate(prompts):
+            is_active = p == active
+            status = "✅ активен" if is_active else ""
+            text += f"**{i+1}.** {p[:50]}{'...' if len(p) > 50 else ''} {status}\n\n"
+    else:
+        text += "_Ещё нет сохранённых промптов._\n\n"
+    
+    if active:
+        text += "🟢 Сейчас используется кастомный промпт."
+    else:
+        text += "⚪ Сейчас используется стандартный промпт."
+    
+    await message.answer(
+        text,
+        reply_markup=get_custom_prompts_keyboard(prompts, active),
+        parse_mode="Markdown"
+    )
 
 
 # ============== CALLBACK HANDLERS ==============
@@ -482,6 +579,145 @@ async def callback_confirm_delete(callback: CallbackQuery) -> None:
         await callback.message.edit_text("❌ Не удалось удалить беседу.")
     
     await callback.answer()
+
+
+# ============== КАСТОМНЫЕ ПРОМПТЫ CALLBACKS ==============
+
+@router.callback_query(F.data.startswith("toggle_prompt:"))
+async def callback_toggle_prompt(callback: CallbackQuery) -> None:
+    """Включить/выключить кастомный промпт"""
+    user_id = callback.from_user.id
+    index = int(callback.data.split(":")[1])
+    
+    prompts = conversation_manager.get_custom_prompts(user_id)
+    active = conversation_manager.get_active_custom_prompt(user_id)
+    
+    if 0 <= index < len(prompts):
+        selected_prompt = prompts[index]
+        
+        if selected_prompt == active:
+            # Отключаем, если уже активен
+            conversation_manager.set_active_custom_prompt(user_id, None)
+            await callback.answer("Кастомный промпт отключён")
+        else:
+            # Включаем выбранный
+            conversation_manager.set_active_custom_prompt(user_id, index)
+            await callback.answer(f"Промпт {index + 1} активирован!")
+        
+        # Обновляем сообщение
+        prompts = conversation_manager.get_custom_prompts(user_id)
+        active = conversation_manager.get_active_custom_prompt(user_id)
+        
+        await callback.message.edit_reply_markup(
+            reply_markup=get_custom_prompts_keyboard(prompts, active)
+        )
+    else:
+        await callback.answer("❌ Промпт не найден", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("delete_prompt:"))
+async def callback_delete_prompt(callback: CallbackQuery) -> None:
+    """Удалить кастомный промпт"""
+    user_id = callback.from_user.id
+    index = int(callback.data.split(":")[1])
+    
+    if conversation_manager.delete_custom_prompt(user_id, index):
+        await callback.answer(f"Промпт {index + 1} удалён!")
+        
+        # Обновляем сообщение
+        prompts = conversation_manager.get_custom_prompts(user_id)
+        active = conversation_manager.get_active_custom_prompt(user_id)
+        
+        text = """✨ **Кастомные промпты**
+
+Здесь ты можешь добавить до 2 своих системных промптов.
+
+"""
+        if prompts:
+            text += f"У тебя {len(prompts)} промпт(ов).\n"
+        else:
+            text += "_Все промпты удалены._\n"
+        
+        await callback.message.edit_text(
+            text,
+            reply_markup=get_custom_prompts_keyboard(prompts, active),
+            parse_mode="Markdown"
+        )
+    else:
+        await callback.answer("❌ Не удалось удалить промпт", show_alert=True)
+
+
+@router.callback_query(F.data == "add_custom_prompt")
+async def callback_add_custom_prompt(callback: CallbackQuery, state: FSMContext) -> None:
+    """Начать добавление кастомного промпта"""
+    user_id = callback.from_user.id
+    prompts = conversation_manager.get_custom_prompts(user_id)
+    
+    note = ""
+    if len(prompts) >= 2:
+        note = "\n\n⚠️ У тебя уже 2 промпта. Новый заменит самый старый."
+    
+    await state.set_state(BotStates.waiting_for_custom_prompt)
+    
+    await callback.message.edit_text(
+        f"✏️ **Введи текст нового промпта:**\n\n"
+        "Этот текст будет добавлен к стандартному системному промпту.\n\n"
+        "Например:\n"
+        "• _Отвечай кратко, не более 3 предложений_\n"
+        "• _Всегда предлагай примеры кода_\n"
+        "• _Говори как пират_ 🏴‍☠️"
+        f"{note}",
+        reply_markup=get_cancel_keyboard(),
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "disable_custom_prompt")
+async def callback_disable_custom_prompt(callback: CallbackQuery) -> None:
+    """Отключить кастомный промпт"""
+    user_id = callback.from_user.id
+    
+    conversation_manager.set_active_custom_prompt(user_id, None)
+    
+    prompts = conversation_manager.get_custom_prompts(user_id)
+    
+    await callback.message.edit_text(
+        "✅ Теперь используется стандартный промпт.\n\n"
+        "Твои сохранённые промпты по-прежнему доступны.",
+        reply_markup=get_custom_prompts_keyboard(prompts, None),
+        parse_mode="Markdown"
+    )
+    await callback.answer("Стандартный промпт активирован")
+
+
+@router.callback_query(F.data == "no_action")
+async def callback_no_action(callback: CallbackQuery) -> None:
+    """Пустое действие для неактивных кнопок"""
+    await callback.answer()
+
+
+@router.message(BotStates.waiting_for_custom_prompt)
+async def process_custom_prompt(message: Message, state: FSMContext) -> None:
+    """Обработка нового кастомного промпта"""
+    user_id = message.from_user.id
+    prompt_text = message.text.strip()[:500]  # Ограничиваем длину
+    
+    if len(prompt_text) < 5:
+        await message.answer("❌ Промпт слишком короткий. Минимум 5 символов.")
+        return
+    
+    index = conversation_manager.add_custom_prompt(user_id, prompt_text)
+    conversation_manager.set_active_custom_prompt(user_id, index - 1)  # Активируем новый
+    
+    await message.answer(
+        f"✅ Промпт #{index} добавлен и активирован!\n\n"
+        f"📝 _{prompt_text[:100]}{'...' if len(prompt_text) > 100 else ''}_\n\n"
+        "Теперь бот будет использовать этот промпт.",
+        parse_mode="Markdown"
+    )
+    
+    await state.clear()
 
 
 # ============== ОБРАБОТЧИКИ КОНТЕНТА ==============
@@ -699,7 +935,38 @@ async def handle_document(message: Message, bot: Bot) -> None:
     file_data = await bot.download_file(file.file_path)
     file_bytes = file_data.read()
     
-    # Обновляем статус
+    # === РЕЖИМ ШАБЛОНОВ ===
+    if conversation_manager.is_template_mode(user_id):
+        if not file_name.lower().endswith('.docx'):
+            await status_msg.edit_text(
+                "❌ В режиме шаблонов поддерживается только **DOCX**!\n\n"
+                "Отправь документ Word (.docx)",
+                parse_mode="Markdown"
+            )
+            return
+        
+        # Сохраняем как шаблон
+        conversation_manager.set_template_doc(user_id, file_bytes, file_name)
+        
+        # Получаем структуру документа для показа пользователю
+        doc_structure = await get_docx_structure_for_ai(file_bytes)
+        
+        # Обрезаем если слишком длинный
+        if len(doc_structure) > 2000:
+            doc_structure = doc_structure[:2000] + "\n\n[... документ обрезан для превью ...]"
+        
+        await status_msg.edit_text(
+            f"✅ **Шаблон загружен:** `{file_name}`\n\n"
+            f"📄 **Содержимое:**\n```\n{doc_structure[:1500]}\n```\n\n"
+            "🔧 **Теперь опиши что нужно заменить:**\n"
+            "• _\"Замени [старый текст] на [новый текст]\"_\n"
+            "• _\"Измени ООО Ромашка на ООО Василёк\"_\n"
+            "• _\"Поменяй дату 01.01.2025 на 15.03.2026\"_",
+            parse_mode="Markdown"
+        )
+        return
+    
+    # === ОБЫЧНЫЙ РЕЖИМ - анализ документа ===
     await status_msg.edit_text("⚙️ Обрабатываю файл...")
     
     # Извлекаем текст
@@ -956,6 +1223,205 @@ async def handle_text(message: Message, bot: Bot) -> None:
                 await status_msg.edit_text(result or "❌ Не удалось сгенерировать")
         return
     
+    # Проверяем режим шаблонов
+    if conversation_manager.is_template_mode(user_id):
+        template_doc = conversation_manager.get_template_doc(user_id)
+        template_name = conversation_manager.get_template_name(user_id)
+        
+        if not template_doc:
+            await message.reply(
+                "📄 Сначала отправь DOCX документ (шаблон)!\n\n"
+                "Загрузи файл, который хочешь редактировать."
+            )
+            return
+        
+        # Получаем структуру документа для AI
+        status_msg = await message.reply("🔍 Анализирую документ и готовлю замены...")
+        
+        await bot.send_chat_action(message.chat.id, "typing")
+        
+        doc_structure = await get_docx_structure_for_ai(template_doc)
+        if len(doc_structure) > 10000:
+            doc_structure = doc_structure[:10000] + "\n[...обрезано...]"
+        
+        # Промпт для AI чтобы он распарсил замены - УМНЫЙ режим
+        ai_prompt = f"""Ты — умный помощник для редактирования документов. Твоя задача — понять, что хочет пользователь, даже если он выражается неточно или примерно.
+
+=== ДОКУМЕНТ ===
+{doc_structure}
+
+=== ЗАПРОС ПОЛЬЗОВАТЕЛЯ ===
+{user_text}
+
+=== ТВОЯ ЗАДАЧА ===
+Проанализируй документ и пойми, что именно пользователь хочет изменить. Пользователь может:
+- Говорить приблизительно ("поменяй название фирмы на Ромашка" — найди ВСЕ названия компаний в документе)
+- Указывать частично ("замени дату" — найди даты в документе и замени на указанную)
+- Описывать суть ("сделай договор на другую компанию ООО Тест" — замени ВСЕ упоминания старой компании)
+- Говорить про тип данных ("поменяй телефон на +7999..." — найди телефоны в документе)
+- Просить изменить реквизиты ("ИНН замени на 1234567890" — найди ИНН и замени)
+- Говорить про ФИО ("ФИО директора замени на Иванов И.И." — найди ФИО в соответствующем контексте)
+- Говорить про должности и подписи ("подпись преподавателя", "ФИО исполнителя" и т.д.)
+
+АЛГОРИТМ:
+1. Пойми НАМЕРЕНИЕ пользователя — что он хочет изменить по смыслу
+2. Найди в документе ВСЕ соответствующие фрагменты (даже если пользователь не назвал их точно)
+3. Ищи по КОНТЕКСТУ: если пользователь говорит "ФИО преподавателя" — найди в документе где упоминается преподаватель и его ФИО рядом
+4. Создай словарь замен, где ключи — ТОЧНЫЕ строки из документа
+
+ВЕРНИ JSON в формате:
+{{"точный_текст_из_документа_1": "новое_значение_1", "точный_текст_из_документа_2": "новое_значение_2"}}
+
+ПРИМЕРЫ:
+- Пользователь: "компанию поменяй на ООО Василёк"
+  Документ содержит: "ООО Ромашка", "ООО «Ромашка»"  
+  Ответ: {{"ООО Ромашка": "ООО Василёк", "ООО «Ромашка»": "ООО «Василёк»"}}
+
+- Пользователь: "дату на 15 марта 2026"
+  Документ содержит: "01 января 2025 г.", "01.01.2025"
+  Ответ: {{"01 января 2025 г.": "15 марта 2026 г.", "01.01.2025": "15.03.2026"}}
+
+- Пользователь: "сумму сделай 500 тысяч"
+  Документ содержит: "100 000 (Сто тысяч) рублей"
+  Ответ: {{"100 000 (Сто тысяч) рублей": "500 000 (Пятьсот тысяч) рублей"}}
+
+- Пользователь: "ФИО преподавателя замени на Дагаев А.В."
+  Документ содержит: "Преподаватель: Иванов П.С.", "Иванов Пётр Сергеевич"
+  Ответ: {{"Иванов П.С.": "Дагаев А.В.", "Иванов Пётр Сергеевич": "Дагаев А.В."}}
+
+- Пользователь: "ФИО директора на Петров"
+  Документ содержит: "Директор ____________ Сидоров А.А."
+  Ответ: {{"Сидоров А.А.": "Петров А.А."}}
+
+- Пользователь: "поменяй студента на Козлов"
+  Документ содержит: "Студент группы ИТ-21: Смирнов Алексей Игоревич"
+  Ответ: {{"Смирнов Алексей Игоревич": "Козлов Алексей Игоревич"}}
+
+КРИТИЧЕСКИ ВАЖНО:
+- Ключи словаря должны быть ТОЧНЫМИ копиями текста из документа (с пробелами, скобками и т.д.)
+- Отвечай ТОЛЬКО валидным JSON, без пояснений и без markdown
+- Если пользователь говорит расплывчато — используй контекст документа чтобы понять что менять  
+- Ищи ФИО рядом с указанной ролью (преподаватель, студент, директор и т.д.)
+- Если совсем непонятно — верни {{"_error": "Уточни, что именно заменить"}}
+
+JSON:"""
+
+        # Получаем замены от AI
+        model = conversation_manager.get_user_model(user_id)
+        ai_response = await get_chat_response([
+            {"role": "system", "content": "Ты эксперт по редактированию документов. Ты умеешь понимать неточные запросы пользователя и находить в документе нужные фрагменты для замены. Отвечай ТОЛЬКО валидным JSON."},
+            {"role": "user", "content": ai_prompt}
+        ], model=model)
+        
+        # Логируем ответ AI для отладки
+        logger.info(f"Template AI response: {ai_response[:500]}")
+        
+        # Парсим JSON - улучшенная версия
+        import json
+        import re
+        
+        replacements = None
+        
+        try:
+            # Способ 1: Напрямую как JSON
+            replacements = json.loads(ai_response.strip())
+        except json.JSONDecodeError:
+            pass
+        
+        if replacements is None:
+            try:
+                # Способ 2: Ищем JSON между ``` блоками
+                code_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', ai_response, re.DOTALL)
+                if code_match:
+                    replacements = json.loads(code_match.group(1))
+            except json.JSONDecodeError:
+                pass
+        
+        if replacements is None:
+            try:
+                # Способ 3: Ищем любой JSON объект (с вложенностью)
+                # Находим первую { и последнюю }
+                start_idx = ai_response.find('{')
+                end_idx = ai_response.rfind('}')
+                if start_idx != -1 and end_idx > start_idx:
+                    json_str = ai_response[start_idx:end_idx + 1]
+                    replacements = json.loads(json_str)
+            except json.JSONDecodeError:
+                pass
+        
+        if replacements is None:
+            logger.error(f"Failed to parse JSON from AI response: {ai_response}")
+            await status_msg.edit_text(
+                "🤔 Не смог разобрать ответ. Попробуй переформулировать:\n\n"
+                f"Твой запрос: _{user_text}_\n\n"
+                "Примеры:\n"
+                "• _\"ФИО преподавателя замени на Иванов И.И.\"_\n"
+                "• _\"Название компании поменяй на ООО Тест\"_\n"
+                "• _\"Дату сделай 15.03.2026\"_",
+                parse_mode="Markdown"
+            )
+            return
+        
+        # Проверяем на ошибку от AI
+        if "_error" in replacements:
+            await status_msg.edit_text(
+                f"🤔 {replacements['_error']}\n\n"
+                "Попробуй сформулировать иначе, например:\n"
+                "• _\"Название компании поменяй на ООО Ромашка\"_\n"
+                "• _\"Дату сделай 15.03.2026\"_\n"
+                "• _\"Сумму измени на 500 000 рублей\"_",
+                parse_mode="Markdown"
+            )
+            return
+        
+        if not replacements:
+            await status_msg.edit_text(
+                "🤔 Не понял, что нужно заменить.\n\n"
+                "Опиши подробнее, например:\n"
+                "• _\"Поменяй компанию на ООО Тест\"_\n"
+                "• _\"Дату договора сделай 15 марта 2026\"_\n"
+                "• _\"Телефон замени на +7 999 123-45-67\"_",
+                parse_mode="Markdown"
+            )
+            return
+        
+        # Показываем что будем менять
+        await status_msg.edit_text("📝 Применяю изменения к документу...")
+        
+        # Редактируем документ
+        try:
+            edited_doc = await edit_docx_with_replacements(template_doc, replacements)
+            
+            # Формируем имя файла
+            base_name = template_name.rsplit('.', 1)[0] if template_name else "document"
+            new_filename = f"{base_name}_edited.docx"
+            
+            # Отправляем результат
+            doc_file = BufferedInputFile(edited_doc, filename=new_filename)
+            
+            # Формируем список замен для caption
+            replacements_text = "\n".join([f"• `{old}` → `{new}`" for old, new in list(replacements.items())[:5]])
+            if len(replacements) > 5:
+                replacements_text += f"\n... и ещё {len(replacements) - 5} замен"
+            
+            await status_msg.delete()
+            await message.reply_document(
+                document=doc_file,
+                caption=f"✅ **Документ отредактирован!**\n\n"
+                        f"📝 **Замены:**\n{replacements_text}\n\n"
+                        f"💡 Можешь загрузить новый шаблон или продолжить редактировать текущий.",
+                parse_mode="Markdown"
+            )
+            
+            # Сохраняем отредактированный как новый шаблон
+            conversation_manager.set_template_doc(user_id, edited_doc, new_filename)
+            
+        except Exception as e:
+            logger.error(f"Error editing document: {e}")
+            await status_msg.edit_text(f"❌ Ошибка при редактировании: {str(e)[:100]}")
+        
+        return
+    
     # Обычный текстовый запрос - показываем анимированный статус
     status_msg = await message.reply("Ищу ответ на Ваш вопрос...")
     
@@ -964,12 +1430,22 @@ async def handle_text(message: Message, bot: Bot) -> None:
     # Добавляем сообщение в историю
     conversation_manager.add_message(user_id, "user", user_text, MAX_HISTORY_MESSAGES)
     
+    # Определяем системный промпт (стандартный + кастомный если есть)
+    custom_prompt = conversation_manager.get_active_custom_prompt(user_id)
+    if custom_prompt:
+        system_prompt = f"{SYSTEM_PROMPT}\n\nДополнительные инструкции пользователя:\n{custom_prompt}"
+    else:
+        system_prompt = SYSTEM_PROMPT
+    
     # Получаем историю и модель пользователя
-    messages = conversation_manager.get_messages_for_api(user_id, SYSTEM_PROMPT)
+    messages = conversation_manager.get_messages_for_api(user_id, system_prompt)
     model = conversation_manager.get_user_model(user_id)
     
     # Получаем ответ
     response = await get_chat_response(messages, model=model)
+    
+    # Добавляем реакцию сердечком на вопрос пользователя
+    await add_heart_reaction(message, bot)
     
     # Сохраняем ответ в историю
     conversation_manager.add_message(user_id, "assistant", response, MAX_HISTORY_MESSAGES)
