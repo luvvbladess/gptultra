@@ -856,12 +856,16 @@ async def send_response(message: Message, response: str) -> None:
             try:
                 await message.reply(response)
             except Exception:
-                # Если и так не получилось, отправляем файлом
-                file_bytes = response.encode('utf-8')
-                file = BufferedInputFile(file_bytes, filename="response.txt")
-                await message.reply_document(
-                    document=file,
-                    caption="📄 Не удалось отформатировать, отправляю файлом."
+                # Если и так не получилось, предлагаем скачать
+                response_id = str(uuid.uuid4())
+                RESPONSE_CACHE[response_id] = response
+                
+                await message.reply(
+                    "📄 **Не удалось отправить сообщение**\n\n"
+                    "Возможно, оно слишком длинное или содержит недопустимые символы.\n"
+                    "Выберите формат для скачивания:",
+                    reply_markup=get_download_keyboard(response_id),
+                    parse_mode="Markdown"
                 )
     else:
         # Ответ слишком длинный - сохраняем в кэш и предлагаем выбор
