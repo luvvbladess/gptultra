@@ -177,4 +177,17 @@ def get_custom_prompts_keyboard(prompts: list, active_prompt: str = None) -> Inl
             callback_data="disable_custom_prompt"
         ))
     
+    
+    return builder.as_markup()
+
+
+def get_download_keyboard(response_id: str) -> InlineKeyboardMarkup:
+    """Клавиатура для скачивания длинного ответа"""
+    builder = InlineKeyboardBuilder()
+    
+    builder.row(
+        InlineKeyboardButton(text="📄 TXT", callback_data=f"dl:txt:{response_id}"),
+        InlineKeyboardButton(text="📝 DOCX", callback_data=f"dl:docx:{response_id}")
+    )
+    
     return builder.as_markup()

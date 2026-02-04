@@ -11,6 +11,9 @@ from aiogram.types import Message, CallbackQuery, BufferedInputFile
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+import uuid
+from io import BytesIO
+from docx import Document
 
 from config import (
     SYSTEM_PROMPT, 
@@ -30,8 +33,14 @@ from keyboards import (
     get_confirm_clear_keyboard,
     get_cancel_keyboard,
     get_models_keyboard,
-    get_custom_prompts_keyboard
+    get_models_keyboard,
+    get_custom_prompts_keyboard,
+    get_download_keyboard
 )
+
+# Глобальный кэш для хранения длинных ответов
+# Key: UUID string, Value: text content
+RESPONSE_CACHE = {}
 
 
 logger = logging.getLogger(__name__)
@@ -720,6 +729,53 @@ async def process_custom_prompt(message: Message, state: FSMContext) -> None:
     await state.clear()
 
 
+    
+    await state.clear()
+
+
+@router.callback_query(F.data.startswith("dl:"))
+async def callback_download_response(callback: CallbackQuery) -> None:
+    """Обработка скачивания длинного ответа"""
+    try:
+        _, format_type, response_id = callback.data.split(":")
+        
+        if response_id not in RESPONSE_CACHE:
+            await callback.answer("❌ Файл устарел или не найден", show_alert=True)
+            return
+            
+        content = RESPONSE_CACHE[response_id]
+        
+        if format_type == "txt":
+            file_bytes = content.encode('utf-8')
+            file = BufferedInputFile(file_bytes, filename="response.txt")
+            await callback.message.reply_document(
+                document=file,
+                caption="📄 Ваш ответ в формате TXT"
+            )
+            await callback.answer()
+            
+        elif format_type == "docx":
+            # Создаем DOCX
+            doc = Document()
+            doc.add_paragraph(content)
+            
+            # Сохраняем в память
+            buffer = BytesIO()
+            doc.save(buffer)
+            buffer.seek(0)
+            
+            file = BufferedInputFile(buffer.read(), filename="response.docx")
+            await callback.message.reply_document(
+                document=file,
+                caption="📝 Ваш ответ в формате DOCX"
+            )
+            await callback.answer()
+            
+    except Exception as e:
+        logger.error(f"Error downloading file: {e}")
+        await callback.answer("❌ Ошибка при формировании файла", show_alert=True)
+
+
 # ============== ОБРАБОТЧИКИ КОНТЕНТА ==============
 
 import re
@@ -808,12 +864,16 @@ async def send_response(message: Message, response: str) -> None:
                     caption="📄 Не удалось отформатировать, отправляю файлом."
                 )
     else:
-        # Отправляем как файл
-        file_bytes = response.encode('utf-8')
-        file = BufferedInputFile(file_bytes, filename="response.txt")
-        await message.reply_document(
-            document=file,
-            caption="📄 Ответ слишком длинный, отправляю файлом."
+        # Ответ слишком длинный - сохраняем в кэш и предлагаем выбор
+        response_id = str(uuid.uuid4())
+        RESPONSE_CACHE[response_id] = response
+        
+        await message.answer(
+            "📄 **Ответ слишком длинный**\n\n"
+            "Telegram не позволяет отправлять такие длинные сообщения.\n"
+            "Выберите удобный формат для скачивания:",
+            reply_markup=get_download_keyboard(response_id),
+            parse_mode="Markdown"
         )
 
 
