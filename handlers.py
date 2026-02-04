@@ -97,6 +97,20 @@ class AnimatedLoader:
 
 
 # Состояния FSM
+def safe_handler(func):
+    """Декоратор для безопасного выполнения хендлеров"""
+    async def wrapper(message: Message, bot: Bot, *args, **kwargs):
+        try:
+            return await func(message, bot, *args, **kwargs)
+        except Exception as e:
+            logger.error(f"Unhandled error in {func.__name__}: {e}")
+            try:
+                await message.reply(f"❌ Критическая ошибка: {e}")
+            except Exception:
+                pass
+    return wrapper
+
+
 class BotStates(StatesGroup):
     waiting_for_rename = State()
     waiting_for_custom_prompt = State()
@@ -1020,104 +1034,119 @@ async def handle_photo(message: Message, bot: Bot) -> None:
 @router.message(F.document)
 async def handle_document(message: Message, bot: Bot) -> None:
     """Обработчик документов (PDF, DOCX, TXT)"""
-    user_id = message.from_user.id
-    document = message.document
-    file_name = document.file_name or "document"
-    
-    # Проверяем формат файла
-    supported_formats = ('.pdf', '.docx', '.txt')
-    if not any(file_name.lower().endswith(ext) for ext in supported_formats):
-        await message.reply(
-            "⚠️ Поддерживаются форматы: PDF, DOCX, TXT\n"
-            "Отправь документ в одном из этих форматов."
-        )
-        return
-    
-    # Показываем индикатор загрузки
-    status_msg = await message.reply("📥 Загружаю файл...")
-    
-    # Скачиваем документ
-    file = await bot.get_file(document.file_id)
-    file_data = await bot.download_file(file.file_path)
-    file_bytes = file_data.read()
-    
-    # === РЕЖИМ ШАБЛОНОВ ===
-    if conversation_manager.is_template_mode(user_id):
-        if not file_name.lower().endswith('.docx'):
+    try:
+        user_id = message.from_user.id
+        document = message.document
+        file_name = document.file_name or "document"
+        
+        # Проверяем формат файла
+        supported_formats = ('.pdf', '.docx', '.txt')
+        if not any(file_name.lower().endswith(ext) for ext in supported_formats):
+            await message.reply(
+                "⚠️ Поддерживаются форматы: PDF, DOCX, TXT\n"
+                "Отправь документ в одном из этих форматов."
+            )
+            return
+        
+        # Показываем индикатор загрузки
+        status_msg = await message.reply("📥 Загружаю файл...")
+        
+        try:
+            # Скачиваем документ
+            file = await bot.get_file(document.file_id)
+            file_data = await bot.download_file(file.file_path)
+            file_bytes = file_data.read()
+        except Exception as e:
+            logger.error(f"Error downloading document: {e}")
+            await status_msg.edit_text(f"❌ Ошибка загрузки файла: {str(e)[:100]}")
+            return
+        
+        # === РЕЖИМ ШАБЛОНОВ ===
+        if conversation_manager.is_template_mode(user_id):
+            if not file_name.lower().endswith('.docx'):
+                await status_msg.edit_text(
+                    "❌ В режиме шаблонов поддерживается только **DOCX**!\n\n"
+                    "Отправь документ Word (.docx)",
+                    parse_mode="Markdown"
+                )
+                return
+            
+            # Сохраняем как шаблон
+            conversation_manager.set_template_doc(user_id, file_bytes, file_name)
+            
+            # Получаем структуру документа для показа пользователю
+            doc_structure = await get_docx_structure_for_ai(file_bytes)
+            
+            # Обрезаем если слишком длинный
+            if len(doc_structure) > 2000:
+                doc_structure = doc_structure[:2000] + "\n\n[... документ обрезан для превью ...]"
+            
             await status_msg.edit_text(
-                "❌ В режиме шаблонов поддерживается только **DOCX**!\n\n"
-                "Отправь документ Word (.docx)",
+                f"✅ **Шаблон загружен:** `{file_name}`\n\n"
+                f"📄 **Содержимое:**\n```\n{doc_structure[:1500]}\n```\n\n"
+                "🔧 **Теперь опиши что нужно заменить:**\n"
+                "• _\"Замени [старый текст] на [новый текст]\"_\n"
+                "• _\"Измени ООО Ромашка на ООО Василёк\"_\n"
+                "• _\"Поменяй дату 01.01.2025 на 15.03.2026\"_",
                 parse_mode="Markdown"
             )
             return
         
-        # Сохраняем как шаблон
-        conversation_manager.set_template_doc(user_id, file_bytes, file_name)
+        # === ОБЫЧНЫЙ РЕЖИМ - анализ документа ===
+        await status_msg.edit_text("⚙️ Обрабатываю файл...")
         
-        # Получаем структуру документа для показа пользователю
-        doc_structure = await get_docx_structure_for_ai(file_bytes)
+        # Извлекаем текст
+        extracted_text = await extract_text_from_file(file_bytes, file_name)
         
-        # Обрезаем если слишком длинный
-        if len(doc_structure) > 2000:
-            doc_structure = doc_structure[:2000] + "\n\n[... документ обрезан для превью ...]"
+        if not extracted_text or extracted_text.startswith("Ошибка"):
+            error_text = extracted_text or "Не удалось извлечь текст"
+            await status_msg.edit_text(f"❌ {error_text}")
+            return
         
-        await status_msg.edit_text(
-            f"✅ **Шаблон загружен:** `{file_name}`\n\n"
-            f"📄 **Содержимое:**\n```\n{doc_structure[:1500]}\n```\n\n"
-            "🔧 **Теперь опиши что нужно заменить:**\n"
-            "• _\"Замени [старый текст] на [новый текст]\"_\n"
-            "• _\"Измени ООО Ромашка на ООО Василёк\"_\n"
-            "• _\"Поменяй дату 01.01.2025 на 15.03.2026\"_",
-            parse_mode="Markdown"
-        )
-        return
-    
-    # === ОБЫЧНЫЙ РЕЖИМ - анализ документа ===
-    await status_msg.edit_text("⚙️ Обрабатываю файл...")
-    
-    # Извлекаем текст
-    extracted_text = await extract_text_from_file(file_bytes, file_name)
-    
-    if not extracted_text:
-        await status_msg.edit_text("❌ Не удалось извлечь текст из документа.")
-        return
-    
-    # Обрезаем текст, если он слишком длинный
-    max_chars = 15000
-    if len(extracted_text) > max_chars:
-        extracted_text = extracted_text[:max_chars] + "\n\n[... текст обрезан ...]"
-    
-    # Добавляем в историю КАК КЕЙС (не как сообщение пользователя, чтобы бот не отвечал сам себе)
-    # Но мы хотим, чтобы бот знал контекст. 
-    # Сохраняем это как сообщение пользователя с пометкой
-    conversation_manager.add_message(user_id, "user", f"[Документ: {file_name}]\n{extracted_text}", MAX_HISTORY_MESSAGES)
-    
-    # Проверяем, был ли вопрос (caption)
-    user_question = message.caption
-    
-    if user_question:
-        # Если есть вопрос - отвечаем на него
-        await status_msg.edit_text("Ищу ответ на Ваш вопрос...")
-        await bot.send_chat_action(message.chat.id, "typing")
+        # Обрезаем текст, если он слишком длинный (увеличили лимит)
+        max_chars = 100000
+        if len(extracted_text) > max_chars:
+            extracted_text = extracted_text[:max_chars] + "\n\n[... текст обрезан ...]"
         
-        # Добавляем вопрос пользователя в историю ОТДЕЛЬНО
-        conversation_manager.add_message(user_id, "user", user_question, MAX_HISTORY_MESSAGES)
+        # Добавляем в историю КАК КЕЙС (не как сообщение пользователя, чтобы бот не отвечал сам себе)
+        # Но мы хотим, чтобы бот знал контекст. 
+        # Сохраняем это как сообщение пользователя с пометкой
+        conversation_manager.add_message(user_id, "user", f"[Документ: {file_name}]\n{extracted_text}", MAX_HISTORY_MESSAGES)
         
-        # Получаем историю и модель
-        messages = conversation_manager.get_messages_for_api(user_id, SYSTEM_PROMPT)
-        model = conversation_manager.get_user_model(user_id)
+        # Проверяем, был ли вопрос (caption)
+        user_question = message.caption
         
-        # Получаем ответ
-        response = await get_chat_response(messages, model=model)
-        
-        # Сохраняем ответ
-        conversation_manager.add_message(user_id, "assistant", response, MAX_HISTORY_MESSAGES)
-        
-        # Редактируем сообщение с ответом
-        await send_response_edit(status_msg, message, response)
-    else:
-        # Если вопроса нет - просто удаляем статусное сообщение (молча сохраняем контекст)
-        await status_msg.delete()
+        if user_question:
+            # Если есть вопрос - отвечаем на него
+            await status_msg.edit_text("Ищу ответ на Ваш вопрос...")
+            await bot.send_chat_action(message.chat.id, "typing")
+            
+            # Добавляем вопрос пользователя в историю ОТДЕЛЬНО
+            conversation_manager.add_message(user_id, "user", user_question, MAX_HISTORY_MESSAGES)
+            
+            # Получаем историю и модель
+            messages = conversation_manager.get_messages_for_api(user_id, SYSTEM_PROMPT)
+            model = conversation_manager.get_user_model(user_id)
+            
+            # Получаем ответ
+            response = await get_chat_response(messages, model=model)
+            
+            # Сохраняем ответ
+            conversation_manager.add_message(user_id, "assistant", response, MAX_HISTORY_MESSAGES)
+            
+            # Редактируем сообщение с ответом
+            await send_response_edit(status_msg, message, response)
+        else:
+            # Если вопроса нет - подтверждаем реакцией
+            await status_msg.delete()
+            await add_heart_reaction(message, bot)
+
+    except Exception as e:
+        logger.error(f"Unhandled error in handle_document: {e}")
+        try:
+            await message.reply(f"❌ Критическая ошибка при обработке файла: {e}")
+        except Exception:
+            pass
 
 
 async def send_response_edit(status_msg: Message, original_msg: Message, response: str) -> None:
@@ -1201,52 +1230,68 @@ async def send_response_edit(status_msg: Message, original_msg: Message, respons
 @router.message(F.voice)
 async def handle_voice(message: Message, bot: Bot) -> None:
     """Обработчик голосовых сообщений"""
-    user_id = message.from_user.id
-    
-    # Статус загрузки
-    status_msg = await message.reply("🎤 Загружаю голосовое сообщение...")
-    
-    # Скачиваем голосовое
-    file = await bot.get_file(message.voice.file_id)
-    file_data = await bot.download_file(file.file_path)
-    audio_bytes = file_data.read()
-    
-    # Транскрибируем
-    await status_msg.edit_text("🔊 Распознаю речь...")
-    
-    transcribed_text = await transcribe_audio(audio_bytes, "ogg")
-    
-    if transcribed_text.startswith("❌"):
-        await status_msg.edit_text(transcribed_text)
-        return
-    
-    # Показываем распознанный текст
-    await status_msg.edit_text(f"📝 Распознано: _{transcribed_text}_\n\nИщу ответ на Ваш вопрос...", parse_mode="Markdown")
-    
-    await bot.send_chat_action(message.chat.id, "typing")
-    
-    # Добавляем в историю
-    conversation_manager.add_message(user_id, "user", transcribed_text, MAX_HISTORY_MESSAGES)
-    
-    # Получаем историю и модель
-    messages = conversation_manager.get_messages_for_api(user_id, SYSTEM_PROMPT)
-    model = conversation_manager.get_user_model(user_id)
-    
-    # Получаем ответ
-    response = await get_chat_response(messages, model=model)
-    
-    # Сохраняем ответ
-    conversation_manager.add_message(user_id, "assistant", response, MAX_HISTORY_MESSAGES)
-    
-    # Редактируем сообщение с ответом
-    await send_response_edit(status_msg, message, response)
+    try:
+        user_id = message.from_user.id
+        
+        # Статус загрузки
+        status_msg = await message.reply("🎤 Загружаю голосовое сообщение...")
+        
+        try:
+            # Скачиваем голосовое
+            file = await bot.get_file(message.voice.file_id)
+            file_data = await bot.download_file(file.file_path)
+            audio_bytes = file_data.read()
+        except Exception as e:
+            logger.error(f"Error downloading voice: {e}")
+            await status_msg.edit_text(f"❌ Ошибка загрузки голосового: {str(e)[:100]}")
+            return
+        
+        # Транскрибируем
+        await status_msg.edit_text("🔊 Распознаю речь...")
+        
+        transcribed_text = await transcribe_audio(audio_bytes, "ogg")
+        
+        if transcribed_text.startswith("❌"):
+            await status_msg.edit_text(transcribed_text)
+            return
+        
+        # Показываем распознанный текст
+        await status_msg.edit_text(f"📝 Распознано: _{transcribed_text}_\n\nИщу ответ на Ваш вопрос...", parse_mode="Markdown")
+        
+        await bot.send_chat_action(message.chat.id, "typing")
+        
+        # Добавляем в историю
+        conversation_manager.add_message(user_id, "user", transcribed_text, MAX_HISTORY_MESSAGES)
+        
+        # Получаем историю и модель
+        messages = conversation_manager.get_messages_for_api(user_id, SYSTEM_PROMPT)
+        model = conversation_manager.get_user_model(user_id)
+        
+        # Получаем ответ
+        response = await get_chat_response(messages, model=model)
+        
+        # Сохраняем ответ
+        conversation_manager.add_message(user_id, "assistant", response, MAX_HISTORY_MESSAGES)
+        
+        # Редактируем сообщение с ответом
+        await send_response_edit(status_msg, message, response)
+
+    except Exception as e:
+        logger.error(f"Unhandled error in handle_voice: {e}")
+        try:
+            await message.reply(f"❌ Критическая ошибка при обработке голосового: {e}")
+        except Exception:
+            pass
 
 
 @router.message(F.text)
+@safe_handler
 async def handle_text(message: Message, bot: Bot) -> None:
     """Обработчик текстовых сообщений"""
     user_id = message.from_user.id
     user_text = message.text
+    
+    logger.info(f"Received text message from {user_id}: {user_text[:50]}...")
     
     # Игнорируем пустые сообщения
     if not user_text or not user_text.strip():
@@ -1582,6 +1627,7 @@ JSON:"""
     # Обычный текстовый запрос - показываем анимированный статус
     status_msg = await message.reply("Ищу ответ на Ваш вопрос...")
     
+    logger.info(f"Processing normal text for {user_id}, sending typing action")
     await bot.send_chat_action(message.chat.id, "typing")
     
     # Добавляем сообщение в историю
@@ -1599,7 +1645,9 @@ JSON:"""
     model = conversation_manager.get_user_model(user_id)
     
     # Получаем ответ
+    logger.info(f"Sending request to OpenAI (model={model})...")
     response = await get_chat_response(messages, model=model)
+    logger.info(f"Received response from OpenAI: {len(response)} chars")
     
     # Добавляем реакцию сердечком на вопрос пользователя
     await add_heart_reaction(message, bot)

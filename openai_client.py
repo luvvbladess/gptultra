@@ -121,6 +121,7 @@ async def get_chat_response(
             return "Не удалось получить ответ"
         else:
             # Используем обычный Chat Completions API
+            logger.info("Using standard Chat Completions API")
             response = await client.chat.completions.create(
                 model=use_model,
                 messages=messages,
@@ -128,7 +129,9 @@ async def get_chat_response(
             )
             
             if response.choices and len(response.choices) > 0:
-                return response.choices[0].message.content or "Пустой ответ"
+                content = response.choices[0].message.content or "Пустой ответ"
+                logger.info(f"OpenAI response received: {len(content)} chars")
+                return content
             return "Не удалось получить ответ"
         
     except Exception as e:
