@@ -129,7 +129,16 @@ async def get_chat_response(
             )
             
             if response.choices and len(response.choices) > 0:
-                content = response.choices[0].message.content or "Пустой ответ"
+                choice = response.choices[0]
+                content = choice.message.content
+                finish_reason = choice.finish_reason
+                
+                logger.info(f"OpenAI finish_reason: {finish_reason}")
+                
+                if not content:
+                    logger.warning(f"OpenAI returned empty content! Finish reason: {finish_reason}")
+                    return f"Пустой ответ (причина: {finish_reason})"
+                    
                 logger.info(f"OpenAI response received: {len(content)} chars")
                 return content
             return "Не удалось получить ответ"

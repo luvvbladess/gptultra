@@ -842,6 +842,99 @@ def convert_markdown_to_html(text: str) -> str:
     return text
 
 
+async def get_smart_response(user_id: int, user_question: str, messages: list, status_msg: Message) -> str:
+    """
+    Умное получение ответа с поддержкой больших контекстов (Map-Reduce).
+    Если контекст слишком большой, разбивает обработку на этапы.
+    """
+    
+    # 1. Считаем общий размер контекста
+    total_chars = sum(len(m.get("content", "")) for m in messages)
+    
+    logger.info(f"Smart Context: content size = {total_chars} chars")
+    
+    # Порог для включения Map-Reduce (60 000 символов ~= 15-20к токенов)
+    # Обычные модели держат 128к, но лучше перестраховаться для надежности
+    MAP_REDUCE_THRESHOLD = 60000 
+    
+    if total_chars < MAP_REDUCE_THRESHOLD:
+        # Обычный режим
+        logger.info("Using standard direct request")
+        model = conversation_manager.get_user_model(user_id)
+        return await get_chat_response(messages, model=model)
+    
+    # === РЕЖИМ MAP-REDUCE ===
+    logger.info("Triggering Map-Reduce mode for heavy context")
+    await status_msg.edit_text("📚 Обнаружен большой объем данных. Анализирую документы по очереди...")
+    
+    # 2. Разделяем сообщения на "тяжелые" (документы) и "легкие" (диалог)
+    heavy_messages = []
+    light_messages = []
+    
+    for i, msg in enumerate(messages):
+        content = msg.get("content", "")
+        # Считаем тяжелым всё, что больше 5000 символов (скорее всего документы)
+        if len(content) > 5000:
+            heavy_messages.append(msg)
+        else:
+            light_messages.append(msg)
+            
+    if not heavy_messages:
+        # Если вдруг набралось много мелочи, но нет явных документов - отправляем как есть
+        logger.info("No single heavy messages found, falling back to standard")
+        model = conversation_manager.get_user_model(user_id)
+        return await get_chat_response(messages, model=model)
+        
+    # 3. MAP: Анализируем каждый тяжелый документ
+    summaries = []
+    model = conversation_manager.get_user_model(user_id)
+    
+    for i, doc_msg in enumerate(heavy_messages):
+        await status_msg.edit_text(f"🔍 Анализирую документ {i+1} из {len(heavy_messages)}...")
+        
+        doc_content = doc_msg.get("content", "")
+        
+        # Промпт для анализа конкретного куска
+        map_prompt = [
+            {"role": "system", "content": "Ты аналитик данных. Твоя задача — найти информацию, релевантную вопросу пользователя, в предоставленном тексте. Если информации нет, ответь 'Нет релевантной информации'."},
+            {"role": "user", "content": f"Вопрос пользователя: {user_question}\n\nТекст для анализа:\n{doc_content[:90000]}"} # Обрезаем на всякий случай
+        ]
+        
+        chunk_response = await get_chat_response(map_prompt, model=model)
+        
+        logger.info(f"Map result {i+1}: {len(chunk_response)} chars")
+        if "нет релевантной информации" not in chunk_response.lower() and len(chunk_response) > 10:
+            summaries.append(f"=== Информация из документа {i+1} ===\n{chunk_response}")
+            
+    # 4. REDUCE: Формируем финальный контекст
+    await status_msg.edit_text("✨ Формирую итоговый ответ...")
+    
+    if not summaries:
+        combined_context = "В проанализированных документах не найдено информации, прямо отвечающей на вопрос."
+    else:
+        combined_context = "\n\n".join(summaries)
+        
+    # Создаем финальную историю: системный + легкие сообщения + саммари
+    final_messages = [light_messages[0]] if light_messages and light_messages[0]['role'] == 'system' else []
+    
+    # Добавляем историю диалога (легкие сообщения), чтобы сохранить нить разговора
+    # Но фильтруем системный, если уже добавили
+    for msg in light_messages:
+        if msg['role'] != 'system':
+            final_messages.append(msg)
+            
+    # Добавляем выжимку из документов как контекст перед последним вопросом
+    # Или просто как системное сообщение с контекстом
+    final_messages.append({
+        "role": "system", 
+        "content": f"Результаты анализа документов:\n{combined_context}\n\nИспользуй эту информацию для ответа на последний вопрос пользователя."
+    })
+    
+    # 5. Финальный запрос
+    logger.info("Sending reduced context to OpenAI")
+    return await get_chat_response(final_messages, model=model)
+
+
 def clean_markdown(text: str) -> str:
     """Удаляет символы markdown из текста"""
     # Жирный
@@ -1128,8 +1221,8 @@ async def handle_document(message: Message, bot: Bot) -> None:
             messages = conversation_manager.get_messages_for_api(user_id, SYSTEM_PROMPT)
             model = conversation_manager.get_user_model(user_id)
             
-            # Получаем ответ
-            response = await get_chat_response(messages, model=model)
+            # Получаем ответ через умную функцию
+            response = await get_smart_response(user_id, user_question, messages, status_msg)
             
             # Сохраняем ответ
             conversation_manager.add_message(user_id, "assistant", response, MAX_HISTORY_MESSAGES)
@@ -1195,6 +1288,7 @@ async def send_response_edit(status_msg: Message, original_msg: Message, respons
                      )
     else:
         # Ответ слишком длинный
+        logger.info(f"Response too long ({len(response)} chars), preparing DOCX")
         await status_msg.delete()
         
         clean_text = clean_markdown(response)
@@ -1203,6 +1297,7 @@ async def send_response_edit(status_msg: Message, original_msg: Message, respons
         
         try:
             # Создаем DOCX
+            logger.info("Generating DOCX...")
             doc = Document()
             doc.add_paragraph(clean_text)
             buffer = BytesIO()
@@ -1211,6 +1306,7 @@ async def send_response_edit(status_msg: Message, original_msg: Message, respons
             
             file = BufferedInputFile(buffer.read(), filename="response.docx")
             
+            logger.info("Sending DOCX...")
             await original_msg.reply_document(
                 document=file,
                 caption="📄 **Ответ слишком длинный**\n"
@@ -1218,13 +1314,19 @@ async def send_response_edit(status_msg: Message, original_msg: Message, respons
                 reply_markup=get_txt_download_keyboard(response_id),
                 parse_mode="Markdown"
             )
-        except Exception:
-             file_bytes = clean_text.encode('utf-8')
-             file = BufferedInputFile(file_bytes, filename="response.txt")
-             await original_msg.reply_document(
-                document=file,
-                caption="📄 Ответ слишком длинный, отправляю файлом."
-             )
+            logger.info("DOCX sent successfully")
+        except Exception as e:
+            logger.error(f"Error sending DOCX: {e}")
+            try:
+                 file_bytes = clean_text.encode('utf-8')
+                 file = BufferedInputFile(file_bytes, filename="response.txt")
+                 await original_msg.reply_document(
+                    document=file,
+                    caption="📄 Ответ слишком длинный, отправляю файлом."
+                 )
+                 logger.info("Fallback TXT sent successfully")
+            except Exception as e2:
+                logger.error(f"Error sending fallback TXT: {e2}")
 
 
 @router.message(F.voice)
@@ -1267,8 +1369,12 @@ async def handle_voice(message: Message, bot: Bot) -> None:
         messages = conversation_manager.get_messages_for_api(user_id, SYSTEM_PROMPT)
         model = conversation_manager.get_user_model(user_id)
         
-        # Получаем ответ
-        response = await get_chat_response(messages, model=model)
+        # DEBUG: Логируем структуру истории для отладки
+        history_summary = [f"{m['role']} ({len(m.get('content', ''))} chars)" for m in messages]
+        logger.info(f"Context summary (doc): {history_summary}")
+        
+        # Получаем ответ через умную функцию
+        response = await get_smart_response(user_id, user_question, messages, status_msg)
         
         # Сохраняем ответ
         conversation_manager.add_message(user_id, "assistant", response, MAX_HISTORY_MESSAGES)
@@ -1646,7 +1752,13 @@ JSON:"""
     
     # Получаем ответ
     logger.info(f"Sending request to OpenAI (model={model})...")
-    response = await get_chat_response(messages, model=model)
+    
+    # DEBUG: Логируем структуру истории для отладки
+    history_summary = [f"{m['role']} ({len(m.get('content', ''))} chars)" for m in messages]
+    logger.info(f"Context summary: {history_summary}")
+    
+    # Используем smart_response вместо обычного
+    response = await get_smart_response(user_id, user_text, messages, status_msg)
     logger.info(f"Received response from OpenAI: {len(response)} chars")
     
     # Добавляем реакцию сердечком на вопрос пользователя
