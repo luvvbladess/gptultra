@@ -122,26 +122,78 @@ async def get_chat_response(
         else:
             # Используем обычный Chat Completions API
             logger.info("Using standard Chat Completions API")
-            response = await client.chat.completions.create(
-                model=use_model,
-                messages=messages,
-                max_completion_tokens=MAX_TOKENS
-            )
             
-            if response.choices and len(response.choices) > 0:
+            # Логика повторных попыток и продолжения генерации (Auto-Continue)
+            full_content = ""
+            current_messages = list(messages)
+            
+            # Максимум 3 итерации для продолжения (чтобы не зациклиться)
+            for loop_i in range(3):
+                # Если это ретрай из-за переполнения контекста (пустой ответ + length)
+                # То перед запросом попробуем подрезать историю (удалить самое старое сообщение пользователя, кроме первого)
+                if loop_i > 0 and len(full_content) == 0:
+                     logger.warning("Pruning context to fit token limit...")
+                     # Оставляем системный
+                     sys_msg = [m for m in current_messages if m['role'] == 'system']
+                     other_msgs = [m for m in current_messages if m['role'] != 'system']
+                     
+                     # Удаляем старые, но оставляем последний (запрос)
+                     if len(other_msgs) > 2:
+                         other_msgs = other_msgs[-2:] # Оставляем только пред-пред и последний
+                     
+                     current_messages = sys_msg + other_msgs
+                
+                response = await client.chat.completions.create(
+                    model=use_model,
+                    messages=current_messages,
+                    max_completion_tokens=MAX_TOKENS
+                )
+                
+                if not response.choices or len(response.choices) == 0:
+                    if full_content:
+                        return full_content # Вернем что успели, если вдруг ошибка
+                    return "Не удалось получить ответ"
+                    
                 choice = response.choices[0]
-                content = choice.message.content
+                content = choice.message.content or "" # Если None, то пустая строка
                 finish_reason = choice.finish_reason
                 
-                logger.info(f"OpenAI finish_reason: {finish_reason}")
+                # Добавляем к общему результату
+                full_content += content
                 
-                if not content:
-                    logger.warning(f"OpenAI returned empty content! Finish reason: {finish_reason}")
+                logger.info(f"OpenAI iteration {loop_i+1}: received {len(content)} chars. Reason: {finish_reason}")
+                
+                # Если успешно завершили - выходим
+                if finish_reason == "stop":
+                    logger.info(f"Generation complete. Total: {len(full_content)} chars")
+                    return full_content
+                
+                # Если лимит токенов
+                if finish_reason == "length":
+                    if not content and not full_content:
+                        # Если совсем ничего не сгенерировали и вылетели по лимиту - значит INPUT слишком большой
+                        # Пробуем следующую итерацию с урезанием (см начало цикла)
+                        logger.warning("Empty content with length limit! Context overflow suspected.")
+                        continue
+                    
+                    # Если контент ЕСТЬ, но обрезан - надо продолжить
+                    logger.info("Output truncated (length). Continuing generation...")
+                    current_messages.append({"role": "assistant", "content": content})
+                    # OpenAI сама продолжит, если подать ей историю с незаконченным ответом? 
+                    # Нет, надо явно попросить или просто подать историю
+                    # Обычно просто подать историю + ассистентский ответ достаточно, модель продолжит.
+                    # Но иногда надо добавить "continue" от юзера. Но лучше просто историю.
+                    continue
+                    
+                # Другие причины (content_filter и т.д.)
+                if not full_content:
+                    logger.warning(f"OpenAI returned empty content with reason: {finish_reason}")
                     return f"Пустой ответ (причина: {finish_reason})"
                     
-                logger.info(f"OpenAI response received: {len(content)} chars")
-                return content
-            return "Не удалось получить ответ"
+                return full_content
+            
+            # Если вышли из цикла по лимиту итераций
+            return full_content if full_content else "Ответ слишком длинный (превышен лимит итераций)"
         
     except Exception as e:
         logger.error(f"OpenAI error: {e}")

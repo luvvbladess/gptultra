@@ -897,7 +897,7 @@ async def get_smart_response(user_id: int, user_question: str, messages: list, s
         # Промпт для анализа конкретного куска
         map_prompt = [
             {"role": "system", "content": "Ты аналитик данных. Твоя задача — найти информацию, релевантную вопросу пользователя, в предоставленном тексте. Если информации нет, ответь 'Нет релевантной информации'."},
-            {"role": "user", "content": f"Вопрос пользователя: {user_question}\n\nТекст для анализа:\n{doc_content[:90000]}"} # Обрезаем на всякий случай
+            {"role": "user", "content": f"Вопрос пользователя: {user_question}\n\nТекст для анализа:\n{doc_content[:40000]}"} # Обрезаем безопаснее (40к ~ 10к токенов)
         ]
         
         chunk_response = await get_chat_response(map_prompt, model=model)
