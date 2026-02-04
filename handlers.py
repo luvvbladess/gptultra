@@ -1086,22 +1086,32 @@ async def send_response_edit(status_msg: Message, original_msg: Message, respons
             try:
                 await status_msg.edit_text(response)
             except Exception:
-                # Если редактирование не сработало, отправляем как файл
+                # Если редактирование не сработало, предлагаем скачать
                 await status_msg.delete()
-                file_bytes = response.encode('utf-8')
-                file = BufferedInputFile(file_bytes, filename="response.txt")
-                await original_msg.reply_document(
-                    document=file,
-                    caption="📄 Ответ слишком сложный, отправляю файлом."
+                
+                response_id = str(uuid.uuid4())
+                RESPONSE_CACHE[response_id] = response
+                
+                await original_msg.reply(
+                    "📄 **Не удалось отправить сообщение**\n\n"
+                    "Возможно, оно слишком длинное или содержит недопустимые символы.\n"
+                    "Выберите формат для скачивания:",
+                    reply_markup=get_download_keyboard(response_id),
+                    parse_mode="Markdown"
                 )
     else:
-        # Отправляем как файл
+        # Ответ слишком длинный
         await status_msg.delete()
-        file_bytes = response.encode('utf-8')
-        file = BufferedInputFile(file_bytes, filename="response.txt")
-        await original_msg.reply_document(
-            document=file,
-            caption="📄 Ответ слишком длинный, отправляю файлом."
+        
+        response_id = str(uuid.uuid4())
+        RESPONSE_CACHE[response_id] = response
+        
+        await original_msg.answer(
+            "📄 **Ответ слишком длинный**\n\n"
+            "Telegram не позволяет отправлять такие длинные сообщения.\n"
+            "Выберите удобный формат для скачивания:",
+            reply_markup=get_download_keyboard(response_id),
+            parse_mode="Markdown"
         )
 
 
