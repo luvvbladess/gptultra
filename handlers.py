@@ -35,7 +35,7 @@ from keyboards import (
     get_models_keyboard,
     get_models_keyboard,
     get_custom_prompts_keyboard,
-    get_download_keyboard
+    get_txt_download_keyboard
 )
 
 # Глобальный кэш для хранения длинных ответов
@@ -735,7 +735,7 @@ async def process_custom_prompt(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(F.data.startswith("dl:"))
 async def callback_download_response(callback: CallbackQuery) -> None:
-    """Обработка скачивания длинного ответа"""
+    """Обработка скачивания TXT версии"""
     try:
         _, format_type, response_id = callback.data.split(":")
         
@@ -751,25 +751,6 @@ async def callback_download_response(callback: CallbackQuery) -> None:
             await callback.message.reply_document(
                 document=file,
                 caption="📄 Ваш ответ в формате TXT"
-            )
-            # Удаляем кнопки после нажатия
-            await callback.message.edit_reply_markup(reply_markup=None)
-            await callback.answer()
-            
-        elif format_type == "docx":
-            # Создаем DOCX
-            doc = Document()
-            doc.add_paragraph(content)
-            
-            # Сохраняем в память
-            buffer = BytesIO()
-            doc.save(buffer)
-            buffer.seek(0)
-            
-            file = BufferedInputFile(buffer.read(), filename="response.docx")
-            await callback.message.reply_document(
-                document=file,
-                caption="📝 Ваш ответ в формате DOCX"
             )
             # Удаляем кнопки после нажатия
             await callback.message.edit_reply_markup(reply_markup=None)
@@ -847,6 +828,22 @@ def convert_markdown_to_html(text: str) -> str:
     return text
 
 
+def clean_markdown(text: str) -> str:
+    """Удаляет символы markdown из текста"""
+    # Жирный
+    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+    # Курсив
+    text = re.sub(r'_(.+?)_', r'\1', text)
+    # Код
+    text = re.sub(r'`(.+?)`', r'\1', text)
+    text = re.sub(r'```[\w]*\n(.+?)```', r'\1', text, flags=re.DOTALL)
+    # Заголовки
+    text = re.sub(r'^#+\s+(.+)$', r'\1', text, flags=re.MULTILINE)
+    # Списки
+    # text = re.sub(r'^\s*[\-\*]\s+', '', text, flags=re.MULTILINE) # Оставляем списки, они полезны
+    return text
+
+
 async def send_response(message: Message, response: str) -> None:
     """Отправляет ответ с HTML форматированием, если слишком длинный — в файле"""
     if len(response) <= MAX_TELEGRAM_MESSAGE_LENGTH:
@@ -860,29 +857,70 @@ async def send_response(message: Message, response: str) -> None:
             try:
                 await message.reply(response)
             except Exception:
-                # Если и так не получилось, предлагаем скачать
+                # Если и так не получилось, отправляем DOCX + кнопку на TXT
+                clean_text = clean_markdown(response)
                 response_id = str(uuid.uuid4())
-                RESPONSE_CACHE[response_id] = response
+                RESPONSE_CACHE[response_id] = clean_text
                 
-                await message.reply(
-                    "📄 **Не удалось отправить сообщение**\n\n"
-                    "Возможно, оно слишком длинное или содержит недопустимые символы.\n"
-                    "Выберите формат для скачивания:",
-                    reply_markup=get_download_keyboard(response_id),
-                    parse_mode="Markdown"
-                )
+                try:
+                    # Создаем DOCX
+                    doc = Document()
+                    doc.add_paragraph(clean_text)
+                    buffer = BytesIO()
+                    doc.save(buffer)
+                    buffer.seek(0)
+                    
+                    file = BufferedInputFile(buffer.read(), filename="response.docx")
+                    
+                    await message.reply_document(
+                        document=file,
+                        caption="📄 **Не удалось отправить сообщение**\n"
+                                "Отправляю в формате DOCX (без форматирования).",
+                        reply_markup=get_txt_download_keyboard(response_id),
+                        parse_mode="Markdown"
+                    )
+                except Exception as ex:
+                    # Если DOCX не создался, шлем TXT
+                    logger.error(f"DOCX gen error: {ex}")
+                    file_bytes = clean_text.encode('utf-8')
+                    file = BufferedInputFile(file_bytes, filename="response.txt")
+                    await message.reply_document(
+                        document=file,
+                        caption="📄 Отправляю файлом."
+                    )
+
     else:
-        # Ответ слишком длинный - сохраняем в кэш и предлагаем выбор
+        # Ответ слишком длинный - отправляем DOCX + кнопку на TXT
+        clean_text = clean_markdown(response)
         response_id = str(uuid.uuid4())
-        RESPONSE_CACHE[response_id] = response
+        RESPONSE_CACHE[response_id] = clean_text
         
-        await message.answer(
-            "📄 **Ответ слишком длинный**\n\n"
-            "Telegram не позволяет отправлять такие длинные сообщения.\n"
-            "Выберите удобный формат для скачивания:",
-            reply_markup=get_download_keyboard(response_id),
-            parse_mode="Markdown"
-        )
+        try:
+            # Создаем DOCX
+            doc = Document()
+            doc.add_paragraph(clean_text)
+            buffer = BytesIO()
+            doc.save(buffer)
+            buffer.seek(0)
+            
+            file = BufferedInputFile(buffer.read(), filename="response.docx")
+            
+            await message.reply_document(
+                document=file,
+                caption="📄 **Ответ слишком длинный**\n"
+                        "Отправляю в формате DOCX.",
+                reply_markup=get_txt_download_keyboard(response_id),
+                parse_mode="Markdown"
+            )
+        except Exception as ex:
+             # Если DOCX не создался, шлем TXT
+            logger.error(f"DOCX gen error: {ex}")
+            file_bytes = clean_text.encode('utf-8')
+            file = BufferedInputFile(file_bytes, filename="response.txt")
+            await message.reply_document(
+                document=file,
+                caption="📄 Ответ слишком длинный, отправляю файлом."
+            )
 
 
 @router.message(F.photo)
@@ -1090,33 +1128,69 @@ async def send_response_edit(status_msg: Message, original_msg: Message, respons
             try:
                 await status_msg.edit_text(response)
             except Exception:
-                # Если редактирование не сработало, предлагаем скачать
+                # Если редактирование не сработало
                 await status_msg.delete()
                 
+                clean_text = clean_markdown(response)
                 response_id = str(uuid.uuid4())
-                RESPONSE_CACHE[response_id] = response
+                RESPONSE_CACHE[response_id] = clean_text
                 
-                await original_msg.reply(
-                    "📄 **Не удалось отправить сообщение**\n\n"
-                    "Возможно, оно слишком длинное или содержит недопустимые символы.\n"
-                    "Выберите формат для скачивания:",
-                    reply_markup=get_download_keyboard(response_id),
-                    parse_mode="Markdown"
-                )
+                try:
+                    # Создаем DOCX
+                    doc = Document()
+                    doc.add_paragraph(clean_text)
+                    buffer = BytesIO()
+                    doc.save(buffer)
+                    buffer.seek(0)
+                    
+                    file = BufferedInputFile(buffer.read(), filename="response.docx")
+                    
+                    await original_msg.reply_document(
+                        document=file,
+                        caption="📄 **Не удалось отправить сообщение**\n"
+                                "Отправляю в формате DOCX.",
+                        reply_markup=get_txt_download_keyboard(response_id),
+                        parse_mode="Markdown"
+                    )
+                except Exception:
+                     file_bytes = clean_text.encode('utf-8')
+                     file = BufferedInputFile(file_bytes, filename="response.txt")
+                     await original_msg.reply_document(
+                        document=file,
+                        caption="📄 Отправляю файлом."
+                     )
     else:
         # Ответ слишком длинный
         await status_msg.delete()
         
+        clean_text = clean_markdown(response)
         response_id = str(uuid.uuid4())
-        RESPONSE_CACHE[response_id] = response
+        RESPONSE_CACHE[response_id] = clean_text
         
-        await original_msg.answer(
-            "📄 **Ответ слишком длинный**\n\n"
-            "Telegram не позволяет отправлять такие длинные сообщения.\n"
-            "Выберите удобный формат для скачивания:",
-            reply_markup=get_download_keyboard(response_id),
-            parse_mode="Markdown"
-        )
+        try:
+            # Создаем DOCX
+            doc = Document()
+            doc.add_paragraph(clean_text)
+            buffer = BytesIO()
+            doc.save(buffer)
+            buffer.seek(0)
+            
+            file = BufferedInputFile(buffer.read(), filename="response.docx")
+            
+            await original_msg.reply_document(
+                document=file,
+                caption="📄 **Ответ слишком длинный**\n"
+                        "Отправляю в формате DOCX.",
+                reply_markup=get_txt_download_keyboard(response_id),
+                parse_mode="Markdown"
+            )
+        except Exception:
+             file_bytes = clean_text.encode('utf-8')
+             file = BufferedInputFile(file_bytes, filename="response.txt")
+             await original_msg.reply_document(
+                document=file,
+                caption="📄 Ответ слишком длинный, отправляю файлом."
+             )
 
 
 @router.message(F.voice)
