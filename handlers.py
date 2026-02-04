@@ -1286,7 +1286,7 @@ async def handle_voice(message: Message, bot: Bot) -> None:
 
 @router.message(F.text)
 @safe_handler
-async def handle_text(message: Message, bot: Bot) -> None:
+async def handle_text(message: Message, bot: Bot, **kwargs) -> None:
     """Обработчик текстовых сообщений"""
     user_id = message.from_user.id
     user_text = message.text
