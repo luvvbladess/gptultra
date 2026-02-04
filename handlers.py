@@ -752,6 +752,8 @@ async def callback_download_response(callback: CallbackQuery) -> None:
                 document=file,
                 caption="📄 Ваш ответ в формате TXT"
             )
+            # Удаляем кнопки после нажатия
+            await callback.message.edit_reply_markup(reply_markup=None)
             await callback.answer()
             
         elif format_type == "docx":
@@ -769,6 +771,8 @@ async def callback_download_response(callback: CallbackQuery) -> None:
                 document=file,
                 caption="📝 Ваш ответ в формате DOCX"
             )
+            # Удаляем кнопки после нажатия
+            await callback.message.edit_reply_markup(reply_markup=None)
             await callback.answer()
             
     except Exception as e:
