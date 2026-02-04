@@ -1087,32 +1087,37 @@ async def handle_document(message: Message, bot: Bot) -> None:
     if len(extracted_text) > max_chars:
         extracted_text = extracted_text[:max_chars] + "\n\n[... текст обрезан ...]"
     
-    # Анимированный лоадер для ответа
-    await status_msg.edit_text("Ищу ответ на Ваш вопрос...")
+    # Добавляем в историю КАК КЕЙС (не как сообщение пользователя, чтобы бот не отвечал сам себе)
+    # Но мы хотим, чтобы бот знал контекст. 
+    # Сохраняем это как сообщение пользователя с пометкой
+    conversation_manager.add_message(user_id, "user", f"[Документ: {file_name}]\n{extracted_text}", MAX_HISTORY_MESSAGES)
     
-    # Формируем запрос
-    user_question = message.caption or "Сделай краткое резюме этого документа."
-    prompt = f"Содержимое документа '{file_name}':\n\n{extracted_text}\n\nВопрос: {user_question}"
+    # Проверяем, был ли вопрос (caption)
+    user_question = message.caption
     
-    # Добавляем в историю
-    conversation_manager.add_message(user_id, "user", f"[Документ: {file_name}] {user_question}", MAX_HISTORY_MESSAGES)
-    
-    # Показываем индикатор
-    await bot.send_chat_action(message.chat.id, "typing")
-    
-    # Получаем историю и модель
-    messages = conversation_manager.get_messages_for_api(user_id, SYSTEM_PROMPT)
-    messages[-1]["content"] = prompt  # Заменяем на полный промпт с документом
-    model = conversation_manager.get_user_model(user_id)
-    
-    # Получаем ответ
-    response = await get_chat_response(messages, model=model)
-    
-    # Сохраняем ответ
-    conversation_manager.add_message(user_id, "assistant", response, MAX_HISTORY_MESSAGES)
-    
-    # Редактируем сообщение с ответом
-    await send_response_edit(status_msg, message, response)
+    if user_question:
+        # Если есть вопрос - отвечаем на него
+        await status_msg.edit_text("Ищу ответ на Ваш вопрос...")
+        await bot.send_chat_action(message.chat.id, "typing")
+        
+        # Добавляем вопрос пользователя в историю ОТДЕЛЬНО
+        conversation_manager.add_message(user_id, "user", user_question, MAX_HISTORY_MESSAGES)
+        
+        # Получаем историю и модель
+        messages = conversation_manager.get_messages_for_api(user_id, SYSTEM_PROMPT)
+        model = conversation_manager.get_user_model(user_id)
+        
+        # Получаем ответ
+        response = await get_chat_response(messages, model=model)
+        
+        # Сохраняем ответ
+        conversation_manager.add_message(user_id, "assistant", response, MAX_HISTORY_MESSAGES)
+        
+        # Редактируем сообщение с ответом
+        await send_response_edit(status_msg, message, response)
+    else:
+        # Если вопроса нет - просто удаляем статусное сообщение (молча сохраняем контекст)
+        await status_msg.delete()
 
 
 async def send_response_edit(status_msg: Message, original_msg: Message, response: str) -> None:
