@@ -72,6 +72,7 @@ def fix_numbered_lists(doc):
     list_style_name = 'List Number' # Default in htmldocx for <ol>
     abstract_num_id = None
     
+    # Try to find the abstractNumId used by 'List Number' style
     try:
         styles = doc.styles
         if list_style_name in styles:
@@ -84,56 +85,41 @@ def fix_numbered_lists(doc):
                 if num is not None:
                     abstract_num_id = num.abstractNumId.val
     except Exception as e:
-        # Fallback or error - just log/ignore
         pass
         
+    # If we couldn't find it, we'll try to guess or find the first one
     if abstract_num_id is None:
-        # Fallback: assume abstractNumId=1 if we can't find it (risky but often true for standard template)
-        # Or better: search for ANY abstractNum with numbering
-        # Let's skip optimization and try best effort if we found it.
-        # If not found, we might break things, so return.
-        # Check if we can find any num in the document part
         try:
-             # Just explicitly use a known abstractNum if possible? No.
-             pass
+             # Fallback: check if we can simply create a new abstractNum? 
+             # Creating abstractNum is complex. Let's try to assume 1 if safe.
+             abstract_num_id = 1
         except:
              return
 
-    # If still None, try to pick one from used paragraphs?
-    # Let's verify on the fly.
-    
     for i, p in enumerate(doc.paragraphs):
         # Check if this is a List Number paragraph
         if p.style.name == list_style_name:
-            # If previous was NOT List Number, this is a START of a new list
+            # If previous usage was NOT List Number, this is a START of a new list
+            # OR if this is the very first paragraph
             if last_style != list_style_name:
                 # We need a NEW numbering ID
-                # If we haven't found abstract_num_id yet, try to find it from THIS paragraph's effective numbering
-                # (though usually it's in the style)
-                
-                if abstract_num_id is None:
-                     # Try to get it from style again implicitly if we missed it?
-                     # Or assuming standard Word template: 
-                     # abstractNumId 0 -> often bullets
-                     # abstractNumId 1 -> often numbers
-                     # This is a gamble.
-                     # Let's try to assume 1 if we failed to look it up.
-                     abstract_num_id = 1
-                
                 current_num_id = create_list_numbering(doc, abstract_num_id)
             
-            # Apply the current_num_id to this paragraph
+            # Apply the current_num_id to this paragraph if we have one
             if current_num_id is not None:
                 pPr = p._element.get_or_add_pPr()
                 numPr = pPr.get_or_add_numPr()
                 numId = numPr.get_or_add_numId()
                 numId.set(qn('w:val'), str(current_num_id))
                 
-                # Ensure level is 0 (or keep existing?)
-                # htmldocx might set level. We should preserve or set to 0.
+                # Ensure level is 0
                 ilvl = numPr.get_or_add_ilvl()
-                ilvl.set(qn('w:val'), '0') # Assuming top level for now
-                
+                ilvl.set(qn('w:val'), '0') 
+        else:
+            # If the paragraph is NOT a list item, we reset our "current sequence" tracker
+            # But we don't change the paragraph itself.
+            pass
+            
         last_style = p.style.name
 
 
