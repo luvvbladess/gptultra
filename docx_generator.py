@@ -134,12 +134,19 @@ def convert_markdown_to_docx(markdown_text: str) -> bytes:
         Байты сгенерированного DOCX файла
     """
     # 0. Препроцессинг текста
-    # Часто бывает, что перед таблицей нет отступа, и markdown не видит её.
-    # Добавляем перенос строки перед строками, начинающимися с "|"
+    import re
+    
     lines = markdown_text.split('\n')
     fixed_lines = []
     
     for i, line in enumerate(lines):
+        # 1. Нормализация нумерации списков: заменяем "12. " на "1. "
+        # Это позволяет htmldocx/word корректно обрабатывать их как списки, а наша пост-обработка сбросит нумерацию где надо.
+        # Если оставить "12.", markdown сделает <ol start="12">, и Word может это криво понять (или мы не сможем сбросить).
+        # Заменяем только если это начало строки (с учетом отступов)
+        line = re.sub(r'^(\s*)\d+\.', r'\1 1.', line)
+        
+        # 2. Исправление таблиц
         # Если строка похожа на начало таблицы (содержит | и не пустая), а предыдущая не пустая - добавляем отступ
         if "|" in line and i > 0 and lines[i-1].strip() and not lines[i-1].strip().startswith("|"):
              # Проверяем, что это действительно таблица (наличие разделителя ---|--- на следующей строке)
@@ -167,6 +174,9 @@ def convert_markdown_to_docx(markdown_text: str) -> bytes:
         new_parser.add_html_to_document(html_text, doc)
     except Exception as e:
         # В случае ошибки добавляем текст как есть, но сигнализируем об ошибке в лог (или просто добавляем параграф)
+        print(f"HTMLDOCX CRITICAL ERROR: {e}")
+        import traceback
+        traceback.print_exc()
         doc.add_paragraph("Ошибка при конвертации форматирования. Исходный текст:")
         doc.add_paragraph(markdown_text)
     
