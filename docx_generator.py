@@ -54,20 +54,14 @@ def fix_numbered_lists(doc):
     """
     Post-process the document to reset numbering for separate lists.
     htmldocx typically uses 'List Number' style for <ol>.
-    We detect breaks in list paragraphs and force a new numId.
+    We detect breaks in list paragraphs (including tables!) and force a new numId.
     """
-    last_style = None
+    from docx.oxml.text.paragraph import CT_P
+    from docx.oxml.table import CT_Tbl
+    from docx.text.paragraph import Paragraph
+
+    last_was_list_number = False
     current_num_id = None
-    
-    # Basic abstractNumId for 'List Number' in default template is often 1 or similar.
-    # Ideally we find it from the style.
-    # For now, we'll try to find the standard bullet/numbering definitions.
-    # If we can't find specific ones, this might be tricky.
-    
-    # Strategy:
-    # 1. Inspect 'List Number' style to find its default numId
-    # 2. Get abstractNumId from that numId
-    # 3. Use that abstractNumId to create new nums
     
     list_style_name = 'List Number' # Default in htmldocx for <ol>
     abstract_num_id = None
@@ -96,31 +90,41 @@ def fix_numbered_lists(doc):
         except:
              return
 
-    for i, p in enumerate(doc.paragraphs):
-        # Check if this is a List Number paragraph
-        if p.style.name == list_style_name:
-            # If previous usage was NOT List Number, this is a START of a new list
-            # OR if this is the very first paragraph
-            if last_style != list_style_name:
-                # We need a NEW numbering ID
-                current_num_id = create_list_numbering(doc, abstract_num_id)
+    # Iterate over ALL elements in the body (paragraphs AND tables)
+    for child in doc.element.body.iterchildren():
+        if isinstance(child, CT_P):
+            p = Paragraph(child, doc)
             
-            # Apply the current_num_id to this paragraph if we have one
-            if current_num_id is not None:
-                pPr = p._element.get_or_add_pPr()
-                numPr = pPr.get_or_add_numPr()
-                numId = numPr.get_or_add_numId()
-                numId.set(qn('w:val'), str(current_num_id))
+            # Check if this is a List Number paragraph
+            if p.style.name == list_style_name:
+                # If previous element was NOT List Number, this is a START of a new list
+                if not last_was_list_number:
+                    # We need a NEW numbering ID
+                    current_num_id = create_list_numbering(doc, abstract_num_id)
                 
-                # Ensure level is 0
-                ilvl = numPr.get_or_add_ilvl()
-                ilvl.set(qn('w:val'), '0') 
+                # Apply the current_num_id to this paragraph if we have one
+                if current_num_id is not None:
+                    pPr = p._element.get_or_add_pPr()
+                    numPr = pPr.get_or_add_numPr()
+                    numId = numPr.get_or_add_numId()
+                    numId.set(qn('w:val'), str(current_num_id))
+                    
+                    # Ensure level is 0
+                    ilvl = numPr.get_or_add_ilvl()
+                    ilvl.set(qn('w:val'), '0') 
+                
+                last_was_list_number = True
+            else:
+                # Normal paragraph -> Break
+                last_was_list_number = False
+        
+        elif isinstance(child, CT_Tbl):
+            # Table -> Break the list sequence
+            last_was_list_number = False
+        
         else:
-            # If the paragraph is NOT a list item, we reset our "current sequence" tracker
-            # But we don't change the paragraph itself.
-            pass
-            
-        last_style = p.style.name
+            # Any other element -> Break
+            last_was_list_number = False
 
 
 def convert_markdown_to_docx(markdown_text: str) -> bytes:
