@@ -45,16 +45,6 @@ def create_list_numbering(doc, abstract_num_id=1):
     abstractNumId.set(qn('w:val'), str(abstract_num_id))
     num.append(abstractNumId)
     
-    # Force restart at 1 using lvlOverride
-    # This is the "nuclear option" for Word numbering that usually works even if abstractNum is reused
-    lvlOverride = OxmlElement('w:lvlOverride')
-    lvlOverride.set(qn('w:ilvl'), '0')
-    startOverride = OxmlElement('w:startOverride')
-    startOverride.set(qn('w:val'), '1')
-    lvlOverride.append(startOverride)
-    num.append(lvlOverride)
-
-    
     # Add to numbering part
     numbering_element.append(num)
     
@@ -71,7 +61,7 @@ def fix_numbered_lists(doc):
     from docx.text.paragraph import Paragraph
 
     last_was_list_number = False
-    current_num_id_val = None
+    current_num_id = None
     
     list_style_name = 'List Number' # Default in htmldocx for <ol>
     abstract_num_id = None
@@ -79,11 +69,8 @@ def fix_numbered_lists(doc):
     # Try to find the abstractNumId used by 'List Number' style
     try:
         styles = doc.styles
-        style_options = [list_style_name, 'List Paragraph']
-        for s_name in style_options:
-            if s_name in styles:
-                style = styles[s_name]
-
+        if list_style_name in styles:
+            style = styles[list_style_name]
             if hasattr(style, '_element') and style._element.pPr is not None and style._element.pPr.numPr is not None:
                 default_num_id = style._element.pPr.numPr.numId.val
                 # Now finding abstractNumId from numbering part
@@ -91,15 +78,14 @@ def fix_numbered_lists(doc):
                 num = numbering_part.numbering_definitions._numbering.get_num(default_num_id)
                 if num is not None:
                     abstract_num_id = num.abstractNumId.val
-            if abstract_num_id is not None:
-                break
     except Exception as e:
         pass
         
     # If we couldn't find it, we'll try to guess or find the first one
     if abstract_num_id is None:
         try:
-             # Fallback: assume 1
+             # Fallback: check if we can simply create a new abstractNum? 
+             # Creating abstractNum is complex. Let's try to assume 1 if safe.
              abstract_num_id = 1
         except:
              return
@@ -110,20 +96,18 @@ def fix_numbered_lists(doc):
             p = Paragraph(child, doc)
             
             # Check if this is a List Number paragraph
-            if p.style.name == list_style_name or p.style.name == 'List Paragraph':
-
+            if p.style.name == list_style_name:
                 # If previous element was NOT List Number, this is a START of a new list
                 if not last_was_list_number:
                     # We need a NEW numbering ID
-                    current_num_id_val = create_list_numbering(doc, abstract_num_id)
+                    current_num_id = create_list_numbering(doc, abstract_num_id)
                 
-                # Apply the current_num_id_val to this paragraph if we have one
-                if current_num_id_val is not None:
+                # Apply the current_num_id to this paragraph if we have one
+                if current_num_id is not None:
                     pPr = p._element.get_or_add_pPr()
                     numPr = pPr.get_or_add_numPr()
-                    # Use get_or_add_numId() - this returns a CT_DecimalNumber
-                    numId_element = numPr.get_or_add_numId()
-                    numId_element.set(qn('w:val'), str(current_num_id_val))
+                    numId = numPr.get_or_add_numId()
+                    numId.set(qn('w:val'), str(current_num_id))
                     
                     # Ensure level is 0
                     ilvl = numPr.get_or_add_ilvl()
@@ -143,7 +127,6 @@ def fix_numbered_lists(doc):
             last_was_list_number = False
 
 
-
 def convert_markdown_to_docx(markdown_text: str) -> bytes:
     """
     Конвертирует Markdown текст в DOCX документ.
@@ -161,11 +144,10 @@ def convert_markdown_to_docx(markdown_text: str) -> bytes:
     fixed_lines = []
     
     for i, line in enumerate(lines):
-        # 1. Нормализация нумерации списков: заменяем "12. " на "1. "
-        # Это позволяет htmldocx/word корректно обрабатывать их как списки, а наша пост-обработка сбросит нумерацию где надо.
-        # Если оставить "12.", markdown сделает <ol start="12">, и Word может это криво понять (или мы не сможем сбросить).
-        # Заменяем только если это начало строки (с учетом отступов)
-        line = re.sub(r'^(\s*)\d+\.', r'\1 1.', line)
+        # 1. Отключение распознавания списков: экранируем точку после номера
+        # Превращаем "1. Текст" в "1\. Текст". Markdown не поймет это как список,
+        # и htmldocx просто выведет это как параграф текста "1. Текст".
+        line = re.sub(r'^(\s*)(\d+)\.', r'\1\2\\.', line)
         
         # 2. Исправление таблиц
         # Если строка похожа на начало таблицы (содержит | и не пустая), а предыдущая не пустая - добавляем отступ
