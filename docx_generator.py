@@ -156,6 +156,12 @@ def convert_markdown_to_docx(markdown_text: str) -> bytes:
              if i + 1 < len(lines) and set(lines[i+1].strip()) <= set("|-:| "):
                  fixed_lines.append("")
         
+        # 3. Нормализация заголовков
+        # Markdown требует пустую строку перед заголовком. Если её нет, заголовок может не распознаться.
+        # Если строка начинается с # и пробела (заголовок), и предыдущая строка не пустая -> вставляем пустую.
+        if re.match(r'^\s*#{1,6}\s', line) and i > 0 and lines[i-1].strip():
+             fixed_lines.append("")
+             
         fixed_lines.append(line)
         
     markdown_text = "\n".join(fixed_lines)
