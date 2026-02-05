@@ -1254,7 +1254,6 @@ async def send_response_edit(status_msg: Message, original_msg: Message, respons
     
     if len(response) <= MAX_TELEGRAM_MESSAGE_LENGTH:
         try:
-        try:
             html_response = convert_markdown_to_html(response)
             
             keyboard = None

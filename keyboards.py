@@ -190,3 +190,14 @@ def get_txt_download_keyboard(response_id: str) -> InlineKeyboardMarkup:
     )
     
     return builder.as_markup()
+
+
+def get_convert_docx_keyboard(response_id: str) -> InlineKeyboardMarkup:
+    """Клавиатура для конвертации ответа в DOCX"""
+    builder = InlineKeyboardBuilder()
+    
+    builder.row(
+        InlineKeyboardButton(text="📄 Скачать DOCX", callback_data=f"convert:docx:{response_id}")
+    )
+    
+    return builder.as_markup()
