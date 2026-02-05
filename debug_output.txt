@@ -1,0 +1,15 @@
+AbstractNumIds available: ['9', '0', '1', '2', '3', '4', '5', '6', '7', '8']
+Num Definitions (numId -> abstractNumId):
+  numId=1 -> abstractNumId=8
+  numId=2 -> abstractNumId=6
+  numId=3 -> abstractNumId=5
+  numId=4 -> abstractNumId=4
+  numId=5 -> abstractNumId=7
+  numId=6 -> abstractNumId=3
+  numId=7 -> abstractNumId=2
+  numId=8 -> abstractNumId=1
+  numId=9 -> abstractNumId=0
+  numId=10 -> abstractNumId=9
+  numId=11 -> abstractNumId=9
+
+[Paragraph Usage]

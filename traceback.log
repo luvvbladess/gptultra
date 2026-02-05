@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "C:\proj\botneiro\docx_generator.py", line 207, in convert_markdown_to_docx
+    fix_numbered_lists(doc)
+  File "C:\proj\botneiro\docx_generator.py", line 119, in fix_numbered_lists
+    current_num_id_val = create_list_numbering(doc, abstract_num_id)
+  File "C:\proj\botneiro\docx_generator.py", line 46, in create_list_numbering
+    abstractNumId.set(qn('w:val'), str(abstract_num_id))
+NameError: name 'abstractNumId' is not defined
