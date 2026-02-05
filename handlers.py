@@ -36,7 +36,10 @@ from keyboards import (
     get_models_keyboard,
     get_models_keyboard,
     get_custom_prompts_keyboard,
-    get_txt_download_keyboard
+    get_models_keyboard,
+    get_custom_prompts_keyboard,
+    get_txt_download_keyboard,
+    get_convert_docx_keyboard
 )
 
 # Глобальный кэш для хранения длинных ответов
@@ -952,18 +955,33 @@ def clean_markdown(text: str) -> str:
     return text
 
 
-async def send_response(message: Message, response: str) -> None:
+async def send_response(message: Message, response: str, show_docx_button: bool = False) -> None:
     """Отправляет ответ с HTML форматированием, если слишком длинный — в файле"""
     if len(response) <= MAX_TELEGRAM_MESSAGE_LENGTH:
         try:
             # Пробуем отправить с HTML форматированием
             html_response = convert_markdown_to_html(response)
-            await message.reply(html_response, parse_mode=ParseMode.HTML)
+            
+            keyboard = None
+            if show_docx_button:
+                # Сохраняем ответ в кэш для возможной конвертации
+                response_id = str(uuid.uuid4())
+                RESPONSE_CACHE[response_id] = response
+                keyboard = get_convert_docx_keyboard(response_id)
+            
+            await message.reply(html_response, parse_mode=ParseMode.HTML, reply_markup=keyboard)
         except Exception as e:
             # Если форматирование сломалось, отправляем без него
             logger.warning(f"HTML parse error: {e}")
             try:
-                await message.reply(response)
+                # Если форматирование не прошло, шлем просто текстом
+                keyboard = None
+                if show_docx_button:
+                    response_id = str(uuid.uuid4())
+                    RESPONSE_CACHE[response_id] = response
+                    keyboard = get_convert_docx_keyboard(response_id)
+                    
+                await message.reply(response, reply_markup=keyboard)
             except Exception:
                 # Если и так не получилось, отправляем DOCX + кнопку на TXT
                 clean_text = clean_markdown(response)
@@ -1112,7 +1130,7 @@ async def handle_photo(message: Message, bot: Bot) -> None:
     conversation_manager.add_message(user_id, "assistant", response, MAX_HISTORY_MESSAGES)
     
     # Отправляем
-    await send_response(message, response)
+    await send_response(message, response, show_docx_button=True)
 
 
 @router.message(F.document)
@@ -1219,7 +1237,7 @@ async def handle_document(message: Message, bot: Bot) -> None:
             conversation_manager.add_message(user_id, "assistant", response, MAX_HISTORY_MESSAGES)
             
             # Редактируем сообщение с ответом
-            await send_response_edit(status_msg, message, response)
+            await send_response_edit(status_msg, message, response, show_docx_button=True)
         else:
             # Если вопроса нет - подтверждаем реакцией
             await status_msg.delete()
@@ -1233,14 +1251,23 @@ async def handle_document(message: Message, bot: Bot) -> None:
             pass
 
 
-async def send_response_edit(status_msg: Message, original_msg: Message, response: str) -> None:
+async def send_response_edit(status_msg: Message, original_msg: Message, response: str, show_docx_button: bool = False) -> None:
     """Редактирует статусное сообщение с финальным ответом"""
     from aiogram.enums import ParseMode
     
     if len(response) <= MAX_TELEGRAM_MESSAGE_LENGTH:
         try:
+        try:
             html_response = convert_markdown_to_html(response)
-            await status_msg.edit_text(html_response, parse_mode=ParseMode.HTML)
+            
+            keyboard = None
+            if show_docx_button:
+                # Сохраняем ответ в кэш для возможной конвертации
+                response_id = str(uuid.uuid4())
+                RESPONSE_CACHE[response_id] = response
+                keyboard = get_convert_docx_keyboard(response_id)
+            
+            await status_msg.edit_text(html_response, parse_mode=ParseMode.HTML, reply_markup=keyboard)
         except Exception as e:
             logger.warning(f"HTML edit error: {e}")
             try:
@@ -1361,7 +1388,7 @@ async def handle_voice(message: Message, bot: Bot) -> None:
         conversation_manager.add_message(user_id, "assistant", response, MAX_HISTORY_MESSAGES)
         
         # Редактируем сообщение с ответом
-        await send_response_edit(status_msg, message, response)
+        await send_response_edit(status_msg, message, response, show_docx_button=True)
 
     except Exception as e:
         logger.error(f"Unhandled error in handle_voice: {e}")
@@ -1749,6 +1776,34 @@ JSON:"""
     conversation_manager.add_message(user_id, "assistant", response, MAX_HISTORY_MESSAGES)
     
     # Редактируем статусное сообщение с ответом
-    await send_response_edit(status_msg, message, response)
+    await send_response_edit(status_msg, message, response, show_docx_button=True)
 
 
+
+@router.callback_query(F.data.startswith("convert:docx:"))
+async def convert_to_docx_callback(callback: CallbackQuery):
+    """Конвертация ответа в DOCX по кнопке"""
+    try:
+        response_id = callback.data.split(":")[2]
+        
+        # Пытаемся получить исходный Markdown из кэша
+        text_content = RESPONSE_CACHE.get(response_id)
+        
+        if not text_content:
+            await callback.answer("⚠️ Текст не найден (бот был перезагружен)", show_alert=True)
+            return
+
+        await callback.answer("⏳ Генерирую документ...")
+        
+        # Генерируем DOCX
+        docx_bytes = convert_markdown_to_docx(text_content)
+        file = BufferedInputFile(docx_bytes, filename="response.docx")
+        
+        await callback.message.reply_document(
+            document=file,
+            caption="📄 Ваш документ готов."
+        )
+        
+    except Exception as e:
+        logger.error(f"Error converting to docx via callback: {e}")
+        await callback.answer("❌ Произошла ошибка при генерации", show_alert=True)
