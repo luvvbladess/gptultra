@@ -1374,7 +1374,7 @@ async def handle_voice(message: Message, bot: Bot) -> None:
         logger.info(f"Context summary (doc): {history_summary}")
         
         # Получаем ответ через умную функцию
-        response = await get_smart_response(user_id, user_question, messages, status_msg)
+        response = await get_smart_response(user_id, transcribed_text, messages, status_msg)
         
         # Сохраняем ответ
         conversation_manager.add_message(user_id, "assistant", response, MAX_HISTORY_MESSAGES)
