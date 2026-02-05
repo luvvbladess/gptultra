@@ -34,9 +34,6 @@ from keyboards import (
     get_confirm_clear_keyboard,
     get_cancel_keyboard,
     get_models_keyboard,
-    get_models_keyboard,
-    get_custom_prompts_keyboard,
-    get_models_keyboard,
     get_custom_prompts_keyboard,
     get_txt_download_keyboard,
     get_convert_docx_keyboard
