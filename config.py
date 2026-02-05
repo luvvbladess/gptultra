@@ -24,7 +24,7 @@ OPENAI_VISION_MODEL = "gpt-4o"
 IMAGE_MODEL = "dall-e-3"
 
 # Максимальное количество токенов в ответе
-MAX_TOKENS = 160000
+MAX_TOKENS = 110000
 
 # Максимальное количество сообщений в истории беседы
 MAX_HISTORY_MESSAGES = 20

@@ -24,6 +24,7 @@ from config import (
 from aiogram.types import ReactionTypeEmoji
 from openai_client import get_chat_response, encode_image_to_base64, generate_image, edit_image_with_dalle, transcribe_audio
 from document_parser import extract_text_from_file, edit_docx_with_replacements, get_docx_structure_for_ai
+from docx_generator import convert_markdown_to_docx
 from conversations import conversation_manager
 from keyboards import (
     get_main_menu_keyboard,
@@ -970,19 +971,14 @@ async def send_response(message: Message, response: str) -> None:
                 RESPONSE_CACHE[response_id] = clean_text
                 
                 try:
-                    # Создаем DOCX
-                    doc = Document()
-                    doc.add_paragraph(clean_text)
-                    buffer = BytesIO()
-                    doc.save(buffer)
-                    buffer.seek(0)
-                    
-                    file = BufferedInputFile(buffer.read(), filename="response.docx")
+                    # Создаем DOCX с форматированием
+                    docx_bytes = convert_markdown_to_docx(response)
+                    file = BufferedInputFile(docx_bytes, filename="response.docx")
                     
                     await message.reply_document(
                         document=file,
                         caption="📄 **Не удалось отправить сообщение**\n"
-                                "Отправляю в формате DOCX (без форматирования).",
+                                "Отправляю в формате DOCX (с сохранением форматирования).",
                         reply_markup=get_txt_download_keyboard(response_id),
                         parse_mode="Markdown"
                     )
@@ -1003,19 +999,14 @@ async def send_response(message: Message, response: str) -> None:
         RESPONSE_CACHE[response_id] = clean_text
         
         try:
-            # Создаем DOCX
-            doc = Document()
-            doc.add_paragraph(clean_text)
-            buffer = BytesIO()
-            doc.save(buffer)
-            buffer.seek(0)
-            
-            file = BufferedInputFile(buffer.read(), filename="response.docx")
+            # Создаем DOCX с форматированием
+            docx_bytes = convert_markdown_to_docx(response)
+            file = BufferedInputFile(docx_bytes, filename="response.docx")
             
             await message.reply_document(
                 document=file,
                 caption="📄 **Ответ слишком длинный**\n"
-                        "Отправляю в формате DOCX.",
+                        "Отправляю в формате DOCX (с сохранением форматирования).",
                 reply_markup=get_txt_download_keyboard(response_id),
                 parse_mode="Markdown"
             )
@@ -1263,19 +1254,14 @@ async def send_response_edit(status_msg: Message, original_msg: Message, respons
                 RESPONSE_CACHE[response_id] = clean_text
                 
                 try:
-                    # Создаем DOCX
-                    doc = Document()
-                    doc.add_paragraph(clean_text)
-                    buffer = BytesIO()
-                    doc.save(buffer)
-                    buffer.seek(0)
-                    
-                    file = BufferedInputFile(buffer.read(), filename="response.docx")
+                    # Создаем DOCX с форматированием
+                    docx_bytes = convert_markdown_to_docx(response)
+                    file = BufferedInputFile(docx_bytes, filename="response.docx")
                     
                     await original_msg.reply_document(
                         document=file,
                         caption="📄 **Не удалось отправить сообщение**\n"
-                                "Отправляю в формате DOCX.",
+                                "Отправляю в формате DOCX (с сохранением форматирования).",
                         reply_markup=get_txt_download_keyboard(response_id),
                         parse_mode="Markdown"
                     )
@@ -1296,21 +1282,16 @@ async def send_response_edit(status_msg: Message, original_msg: Message, respons
         RESPONSE_CACHE[response_id] = clean_text
         
         try:
-            # Создаем DOCX
-            logger.info("Generating DOCX...")
-            doc = Document()
-            doc.add_paragraph(clean_text)
-            buffer = BytesIO()
-            doc.save(buffer)
-            buffer.seek(0)
-            
-            file = BufferedInputFile(buffer.read(), filename="response.docx")
+            # Создаем DOCX с форматированием
+            logger.info("Generating DOCX with formatting...")
+            docx_bytes = convert_markdown_to_docx(response)
+            file = BufferedInputFile(docx_bytes, filename="response.docx")
             
             logger.info("Sending DOCX...")
             await original_msg.reply_document(
                 document=file,
                 caption="📄 **Ответ слишком длинный**\n"
-                        "Отправляю в формате DOCX.",
+                        "Отправляю в формате DOCX (с сохранением форматирования).",
                 reply_markup=get_txt_download_keyboard(response_id),
                 parse_mode="Markdown"
             )
