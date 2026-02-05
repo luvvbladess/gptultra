@@ -18,6 +18,23 @@ def convert_markdown_to_docx(markdown_text: str) -> bytes:
     Returns:
         Байты сгенерированного DOCX файла
     """
+    # 0. Препроцессинг текста
+    # Часто бывает, что перед таблицей нет отступа, и markdown не видит её.
+    # Добавляем перенос строки перед строками, начинающимися с "|"
+    lines = markdown_text.split('\n')
+    fixed_lines = []
+    
+    for i, line in enumerate(lines):
+        # Если строка похожа на начало таблицы (содержит | и не пустая), а предыдущая не пустая - добавляем отступ
+        if "|" in line and i > 0 and lines[i-1].strip() and not lines[i-1].strip().startswith("|"):
+             # Проверяем, что это действительно таблица (наличие разделителя ---|--- на следующей строке)
+             if i + 1 < len(lines) and set(lines[i+1].strip()) <= set("|-:| "):
+                 fixed_lines.append("")
+        
+        fixed_lines.append(line)
+        
+    markdown_text = "\n".join(fixed_lines)
+
     # 1. Конвертируем Markdown в HTML
     # Используем расширения для поддержки таблиц и других элементов
     html_text = markdown.markdown(
